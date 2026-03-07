@@ -1,0 +1,4 @@
+# SQLite runtime data
+data/*.db
+data/*.db-shm
+data/*.db-wal

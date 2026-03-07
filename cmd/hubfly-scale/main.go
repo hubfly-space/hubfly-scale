@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
@@ -19,8 +20,12 @@ import (
 func main() {
 	logger := log.New(os.Stdout, "hubfly-scale ", log.LstdFlags|log.Lmicroseconds)
 
-	dbPath := getenv("HF_SCALE_DB", "./hubfly-scale.db")
+	dbPath := getenv("HF_SCALE_DB", "./data/hubfly-scale.db")
 	addr := getenv("HF_SCALE_ADDR", ":8080")
+
+	if err := os.MkdirAll(filepath.Dir(dbPath), 0o755); err != nil {
+		logger.Fatalf("ensure db directory: %v", err)
+	}
 
 	st, err := store.NewSQLiteStore(dbPath)
 	if err != nil {

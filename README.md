@@ -1,0 +1,179 @@
+# hubfly-scale
+
+`hubfly-scale` is a lightweight Go service that watches container traffic and automatically puts idle containers to sleep with `docker pause`, then wakes them with `docker unpause` when traffic appears again.
+
+Current scope is **single-container runtime control** (scale-to-zero behavior via pause/unpause), designed with modular internals so future multi-replica scaling can be added.
+
+## How It Works
+
+For each registered container:
+
+1. The service stores config + runtime state in SQLite.
+2. It inspects Docker periodically to keep the latest container IP.
+3. It starts `tcpdump` with a host filter for that IP.
+4. Incoming traffic marks the container as `busy`.
+5. If no traffic is seen for `sleep_after_seconds`, the container is paused.
+6. On traffic detection while paused, the container is unpaused.
+
+Runtime states:
+- `busy`
+- `idle`
+- `sleeping`
+- `error`
+
+## Architecture
+
+- API: `internal/api`
+- Scaler manager/controller: `internal/scaler`
+- Traffic watcher (`tcpdump`): `internal/traffic`
+- Docker integration (`docker` CLI): `internal/docker`
+- SQLite storage: `internal/store`
+
+## Requirements
+
+- Go `1.25+`
+- Docker installed and running
+- `tcpdump` installed
+- Permissions to:
+  - run `docker` commands
+  - run `tcpdump` on host interfaces (often root or `CAP_NET_RAW/CAP_NET_ADMIN`)
+
+## Run
+
+```bash
+go run ./cmd/hubfly-scale
+```
+
+Optional env vars:
+
+- `HF_SCALE_ADDR` (default `:8080`)
+- `HF_SCALE_DB` (default `./data/hubfly-scale.db`)
+
+Example:
+
+```bash
+HF_SCALE_ADDR=":8080" HF_SCALE_DB="./data/hubfly-scale.db" go run ./cmd/hubfly-scale
+```
+
+## API
+
+### Health
+
+```bash
+curl -s http://localhost:8080/healthz
+```
+
+### Register/Update a container scaler config
+
+```bash
+curl -s -X POST http://localhost:8080/v1/containers \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "name": "my-app",
+    "sleep_after_seconds": 30,
+    "busy_window_seconds": 2,
+    "inspect_interval_seconds": 5
+  }'
+```
+
+Fields:
+- `name`: Docker container name (required)
+- `sleep_after_seconds`: inactivity before pause (default `60`)
+- `busy_window_seconds`: traffic freshness window to mark `busy` (default `2`)
+- `inspect_interval_seconds`: interval to refresh IP/paused state (default `5`)
+
+### List all managed containers
+
+```bash
+curl -s http://localhost:8080/v1/containers | jq
+```
+
+### Get one managed container
+
+```bash
+curl -s http://localhost:8080/v1/containers/my-app | jq
+```
+
+### Reload a container controller
+
+```bash
+curl -s -X POST http://localhost:8080/v1/containers/my-app/reload
+```
+
+## Quick End-to-End Test with Curl
+
+Use a container with an open port (example: nginx on `8081`).
+
+1. Start test container:
+
+```bash
+docker run -d --name my-app -p 8081:80 nginx:alpine
+```
+
+2. Start `hubfly-scale` (in another terminal):
+
+```bash
+go run ./cmd/hubfly-scale
+```
+
+3. Register container with short sleep timeout:
+
+```bash
+curl -s -X POST http://localhost:8080/v1/containers \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "name": "my-app",
+    "sleep_after_seconds": 10,
+    "busy_window_seconds": 2,
+    "inspect_interval_seconds": 3
+  }' | jq
+```
+
+4. Generate traffic:
+
+```bash
+curl -s http://localhost:8081 > /dev/null
+curl -s http://localhost:8081 > /dev/null
+```
+
+5. Check runtime state:
+
+```bash
+curl -s http://localhost:8080/v1/containers/my-app | jq
+```
+
+6. Wait >10s without traffic, then verify paused:
+
+```bash
+docker inspect -f '{{.State.Paused}}' my-app
+curl -s http://localhost:8080/v1/containers/my-app | jq
+```
+
+7. Send traffic again and verify it wakes:
+
+```bash
+curl -s http://localhost:8081 > /dev/null
+sleep 1
+docker inspect -f '{{.State.Paused}}' my-app
+curl -s http://localhost:8080/v1/containers/my-app | jq
+```
+
+## Notes and Limitations
+
+- This version focuses on a **single container runtime unit** (no replica orchestration yet).
+- `tcpdump` behavior depends on host/network setup and required privileges.
+- For production use, add API authentication and integration tests (tracked in `todo.md`).
+
+## Development
+
+Run tests:
+
+```bash
+go test ./...
+```
+
+Build:
+
+```bash
+go build ./...
+```
