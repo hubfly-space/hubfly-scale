@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
@@ -17,11 +18,18 @@ import (
 	"hubfly-scale/internal/traffic"
 )
 
+var Version = "dev"
+
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "version" {
+		fmt.Println(Version)
+		return
+	}
+
 	logger := log.New(os.Stdout, "hubfly-scale ", log.LstdFlags|log.Lmicroseconds)
 
 	dbPath := getenv("HF_SCALE_DB", "./data/hubfly-scale.db")
-	addr := getenv("HF_SCALE_ADDR", ":8080")
+	addr := getenv("HF_SCALE_ADDR", ":10006")
 
 	if err := os.MkdirAll(filepath.Dir(dbPath), 0o755); err != nil {
 		logger.Fatalf("ensure db directory: %v", err)

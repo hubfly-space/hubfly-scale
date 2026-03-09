@@ -46,27 +46,45 @@ go run ./cmd/hubfly-scale
 
 Optional env vars:
 
-- `HF_SCALE_ADDR` (default `:8080`)
+- `HF_SCALE_ADDR` (default `:10006`)
 - `HF_SCALE_DB` (default `./data/hubfly-scale.db`)
 
 Example:
 
 ```bash
-HF_SCALE_ADDR=":8080" HF_SCALE_DB="./data/hubfly-scale.db" go run ./cmd/hubfly-scale
+HF_SCALE_ADDR=":10006" HF_SCALE_DB="./data/hubfly-scale.db" go run ./cmd/hubfly-scale
 ```
+
+Print binary version:
+
+```bash
+hubfly-scale version
+```
+
+Output is only the version string (for releases, this is the git tag).
+
+## Release Artifact
+
+GitHub Actions workflow: `.github/workflows/release-linux.yml`
+
+On tag push matching `v*`, it:
+- builds Linux binary `hubfly-scale`
+- injects version from the tag into the binary
+- creates `hubfly-scale.zip` with the binary at zip root
+- uploads `hubfly-scale.zip` as the GitHub release asset
 
 ## API
 
 ### Health
 
 ```bash
-curl -s http://localhost:8080/healthz
+curl -s http://localhost:10006/healthz
 ```
 
 ### Register/Update a container scaler config
 
 ```bash
-curl -s -X POST http://localhost:8080/v1/containers \
+curl -s -X POST http://localhost:10006/v1/containers \
   -H 'Content-Type: application/json' \
   -d '{
     "name": "my-app",
@@ -85,19 +103,19 @@ Fields:
 ### List all managed containers
 
 ```bash
-curl -s http://localhost:8080/v1/containers | jq
+curl -s http://localhost:10006/v1/containers | jq
 ```
 
 ### Get one managed container
 
 ```bash
-curl -s http://localhost:8080/v1/containers/my-app | jq
+curl -s http://localhost:10006/v1/containers/my-app | jq
 ```
 
 ### Reload a container controller
 
 ```bash
-curl -s -X POST http://localhost:8080/v1/containers/my-app/reload
+curl -s -X POST http://localhost:10006/v1/containers/my-app/reload
 ```
 
 ## Quick End-to-End Test with Curl
@@ -119,7 +137,7 @@ go run ./cmd/hubfly-scale
 3. Register container with short sleep timeout:
 
 ```bash
-curl -s -X POST http://localhost:8080/v1/containers \
+curl -s -X POST http://localhost:10006/v1/containers \
   -H 'Content-Type: application/json' \
   -d '{
     "name": "my-app",
@@ -139,14 +157,14 @@ curl -s http://localhost:8081 > /dev/null
 5. Check runtime state:
 
 ```bash
-curl -s http://localhost:8080/v1/containers/my-app | jq
+curl -s http://localhost:10006/v1/containers/my-app | jq
 ```
 
 6. Wait >10s without traffic, then verify paused:
 
 ```bash
 docker inspect -f '{{.State.Paused}}' my-app
-curl -s http://localhost:8080/v1/containers/my-app | jq
+curl -s http://localhost:10006/v1/containers/my-app | jq
 ```
 
 7. Send traffic again and verify it wakes:
@@ -155,7 +173,7 @@ curl -s http://localhost:8080/v1/containers/my-app | jq
 curl -s http://localhost:8081 > /dev/null
 sleep 1
 docker inspect -f '{{.State.Paused}}' my-app
-curl -s http://localhost:8080/v1/containers/my-app | jq
+curl -s http://localhost:10006/v1/containers/my-app | jq
 ```
 
 ## Notes and Limitations
