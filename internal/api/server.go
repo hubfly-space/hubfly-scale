@@ -32,7 +32,7 @@ func (s *Server) Routes() http.Handler {
 }
 
 func (s *Server) healthz(w http.ResponseWriter, _ *http.Request) {
-	respondJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+	respondJSON(w, http.StatusOK, map[string]string{"status": "healthy"})
 }
 
 func (s *Server) handleContainers(w http.ResponseWriter, r *http.Request) {
