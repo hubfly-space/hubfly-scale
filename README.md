@@ -118,6 +118,12 @@ curl -s http://localhost:10006/v1/containers/my-app | jq
 curl -s -X POST http://localhost:10006/v1/containers/my-app/reload
 ```
 
+### Unregister a container
+
+```bash
+curl -s -X DELETE http://localhost:10006/v1/containers/my-app
+```
+
 ## Quick End-to-End Test with Curl
 
 Use a container with an open port (example: nginx on `8081`).
@@ -180,6 +186,7 @@ curl -s http://localhost:10006/v1/containers/my-app | jq
 
 - This version focuses on a **single container runtime unit** (no replica orchestration yet).
 - `tcpdump` behavior depends on host/network setup and required privileges.
+- If Docker inspections fail 3 consecutive times for a container, it is automatically unregistered.
 - For production use, add API authentication and integration tests (tracked in `todo.md`).
 
 ## Development

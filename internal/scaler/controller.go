@@ -12,18 +12,23 @@ import (
 	"hubfly-scale/internal/traffic"
 )
 
+const maxInspectFailures = 3
+
 type controller struct {
 	cfg     model.ContainerConfig
 	store   *store.SQLiteStore
 	docker  docker.Client
 	watcher *traffic.Watcher
 	logger  *log.Logger
+	drop    func(context.Context, string) error
 
 	mu      sync.Mutex
 	runtime model.ContainerRuntime
+
+	inspectFailures int
 }
 
-func newController(cfg model.ContainerConfig, st *store.SQLiteStore, dc docker.Client, w *traffic.Watcher, logger *log.Logger) *controller {
+func newController(cfg model.ContainerConfig, st *store.SQLiteStore, dc docker.Client, w *traffic.Watcher, logger *log.Logger, drop func(context.Context, string) error) *controller {
 	now := time.Now().UTC()
 	return &controller{
 		cfg:     cfg,
@@ -31,6 +36,7 @@ func newController(cfg model.ContainerConfig, st *store.SQLiteStore, dc docker.C
 		docker:  dc,
 		watcher: w,
 		logger:  logger,
+		drop:    drop,
 		runtime: model.ContainerRuntime{
 			Name:              cfg.Name,
 			Status:            model.StatusIdle,
@@ -65,21 +71,30 @@ func (c *controller) run(ctx context.Context) {
 		errCh       <-chan error
 	)
 
-	reconcile := func() {
+	reconcile := func() bool {
 		now := time.Now().UTC()
 
 		ip, err := c.docker.InspectIP(ctx, c.cfg.Name)
 		if err != nil {
-			c.setStatus(now, model.StatusError)
-			c.logger.Printf("container=%s inspect ip failed: %v", c.cfg.Name, err)
-			return
+			if c.handleInspectFailure(now, "inspect ip", err) {
+				if watchCancel != nil {
+					watchCancel()
+				}
+				return true
+			}
+			return false
 		}
 		paused, err := c.docker.InspectPaused(ctx, c.cfg.Name)
 		if err != nil {
-			c.setStatus(now, model.StatusError)
-			c.logger.Printf("container=%s inspect paused failed: %v", c.cfg.Name, err)
-			return
+			if c.handleInspectFailure(now, "inspect paused", err) {
+				if watchCancel != nil {
+					watchCancel()
+				}
+				return true
+			}
+			return false
 		}
+		c.inspectFailures = 0
 
 		if ip != "" && ip != c.runtime.CurrentIP {
 			if watchCancel != nil {
@@ -114,9 +129,12 @@ func (c *controller) run(ctx context.Context) {
 				c.logger.Printf("container=%s paused after inactivity", c.cfg.Name)
 			}
 		}
+		return false
 	}
 
-	reconcile()
+	if reconcile() {
+		return
+	}
 	for {
 		select {
 		case <-ctx.Done():
@@ -126,7 +144,9 @@ func (c *controller) run(ctx context.Context) {
 			_ = c.store.UpdateRuntime(context.Background(), c.snapshot())
 			return
 		case <-inspectTicker.C:
-			reconcile()
+			if reconcile() {
+				return
+			}
 		case <-persistTicker.C:
 			_ = c.store.UpdateRuntime(ctx, c.snapshot())
 		case <-packetCh:
@@ -149,6 +169,23 @@ func (c *controller) run(ctx context.Context) {
 			}
 		}
 	}
+}
+
+func (c *controller) handleInspectFailure(now time.Time, op string, err error) bool {
+	c.inspectFailures++
+	c.setStatus(now, model.StatusError)
+	c.logger.Printf("container=%s %s failed: %v", c.cfg.Name, op, err)
+	if c.inspectFailures < maxInspectFailures {
+		return false
+	}
+
+	c.logger.Printf("container=%s dropping after %d consecutive inspect failures", c.cfg.Name, c.inspectFailures)
+	if c.drop != nil {
+		if err := c.drop(context.Background(), c.cfg.Name); err != nil {
+			c.logger.Printf("container=%s drop failed: %v", c.cfg.Name, err)
+		}
+	}
+	return true
 }
 
 func (c *controller) setStatus(now time.Time, status string) {

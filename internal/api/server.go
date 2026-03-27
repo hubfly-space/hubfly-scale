@@ -103,6 +103,19 @@ func (s *Server) handleContainerByName(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if len(parts) == 1 && r.Method == http.MethodDelete {
+		if err := s.manager.Unregister(r.Context(), name); err != nil {
+			if errors.Is(err, store.ErrNotFound) {
+				w.WriteHeader(http.StatusNotFound)
+				return
+			}
+			respondError(w, http.StatusInternalServerError, err)
+			return
+		}
+		respondJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
+		return
+	}
+
 	if len(parts) == 2 && r.Method == http.MethodPost {
 		action := parts[1]
 		switch action {

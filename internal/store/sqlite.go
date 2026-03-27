@@ -238,6 +238,21 @@ WHERE name=?
 	return nil
 }
 
+func (s *SQLiteStore) DeleteContainer(ctx context.Context, name string) error {
+	res, err := s.db.ExecContext(ctx, `DELETE FROM containers WHERE name = ?`, name)
+	if err != nil {
+		return fmt.Errorf("delete container: %w", err)
+	}
+	affected, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("delete container: %w", err)
+	}
+	if affected == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
 func boolToInt(v bool) int {
 	if v {
 		return 1

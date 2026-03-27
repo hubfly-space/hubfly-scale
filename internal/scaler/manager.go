@@ -73,7 +73,7 @@ func (m *Manager) StartOrRestart(ctx context.Context, cfg model.ContainerConfig)
 	m.controllers[cfg.Name] = cancel
 	m.mu.Unlock()
 
-	ctrl := newController(cfg, m.store, m.docker, m.watcher, m.logger)
+	ctrl := newController(cfg, m.store, m.docker, m.watcher, m.logger, m.Unregister)
 	go ctrl.run(runCtx)
 	return nil
 }
@@ -85,4 +85,19 @@ func (m *Manager) StopAll() {
 		cancel()
 	}
 	m.controllers = map[string]context.CancelFunc{}
+}
+
+func (m *Manager) Unregister(ctx context.Context, name string) error {
+	if name == "" {
+		return fmt.Errorf("container name is required")
+	}
+
+	m.mu.Lock()
+	if cancel, ok := m.controllers[name]; ok {
+		cancel()
+		delete(m.controllers, name)
+	}
+	m.mu.Unlock()
+
+	return m.store.DeleteContainer(ctx, name)
 }
