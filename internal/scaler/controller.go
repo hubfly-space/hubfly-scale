@@ -26,6 +26,10 @@ type controller struct {
 	runtime model.ContainerRuntime
 
 	inspectFailures int
+
+	cpuWindow    *cpuWindow
+	cpuPrevStats docker.ContainerStats
+	cpuHasPrev   bool
 }
 
 func newController(cfg model.ContainerConfig, st *store.SQLiteStore, dc docker.Client, w *traffic.Watcher, logger *log.Logger, drop func(context.Context, string) error) *controller {
@@ -54,16 +58,46 @@ func (c *controller) loadPersistedRuntime(ctx context.Context) {
 	c.runtime = info.Runtime
 }
 
+func (c *controller) cpuScalingEnabled() bool {
+	return c.cfg.MinCPU > 0 && c.cfg.MaxCPU > 0 && c.cfg.MaxCPU >= c.cfg.MinCPU
+}
+
+func (c *controller) initCPUState() {
+	if !c.cpuScalingEnabled() {
+		return
+	}
+	if c.runtime.CurrentCPU <= 0 {
+		c.runtime.CurrentCPU = c.cfg.MinCPU
+	}
+	if c.runtime.CurrentCPU < c.cfg.MinCPU {
+		c.runtime.CurrentCPU = c.cfg.MinCPU
+	}
+	if c.runtime.CurrentCPU > c.cfg.MaxCPU {
+		c.runtime.CurrentCPU = c.cfg.MaxCPU
+	}
+	if c.cpuWindow == nil {
+		c.cpuWindow = newCPUWindow(cpuWindowSize)
+	}
+}
+
 func (c *controller) run(ctx context.Context) {
 	c.loadPersistedRuntime(ctx)
+	c.initCPUState()
 
 	inspectTicker := time.NewTicker(c.cfg.InspectInterval)
 	if c.cfg.InspectInterval <= 0 {
 		inspectTicker = time.NewTicker(5 * time.Second)
 	}
 	persistTicker := time.NewTicker(2 * time.Second)
+	var cpuTicker *time.Ticker
+	if c.cpuScalingEnabled() {
+		cpuTicker = time.NewTicker(cpuPollInterval)
+	}
 	defer inspectTicker.Stop()
 	defer persistTicker.Stop()
+	if cpuTicker != nil {
+		defer cpuTicker.Stop()
+	}
 
 	var (
 		watchCancel context.CancelFunc
@@ -149,6 +183,13 @@ func (c *controller) run(ctx context.Context) {
 			}
 		case <-persistTicker.C:
 			_ = c.store.UpdateRuntime(ctx, c.snapshot())
+		case <-func() <-chan time.Time {
+			if cpuTicker != nil {
+				return cpuTicker.C
+			}
+			return nil
+		}():
+			c.handleCPUScale(ctx)
 		case <-packetCh:
 			now := time.Now().UTC()
 			c.runtime.LastTrafficAt = &now
@@ -201,4 +242,83 @@ func (c *controller) snapshot() model.ContainerRuntime {
 	cp := c.runtime
 	cp.UpdatedAt = time.Now().UTC()
 	return cp
+}
+
+func (c *controller) handleCPUScale(ctx context.Context) {
+	if !c.cpuScalingEnabled() {
+		return
+	}
+	now := time.Now().UTC()
+	stats, err := c.docker.Stats(ctx, c.cfg.Name)
+	if err != nil {
+		c.logger.Printf("container=%s stats failed: %v", c.cfg.Name, err)
+		return
+	}
+
+	usagePct, ok := cpuUsagePercent(c.cpuPrevStats, stats, c.runtime.CurrentCPU, c.cpuHasPrev)
+	c.cpuPrevStats = stats
+	c.cpuHasPrev = true
+	if !ok {
+		return
+	}
+
+	if c.runtime.CurrentCPU <= 0 {
+		c.runtime.CurrentCPU = c.cfg.MinCPU
+	}
+
+	if c.runtime.CPUCooldownUntil != nil && now.Before(*c.runtime.CPUCooldownUntil) {
+		c.cpuWindow.Reset()
+		return
+	}
+
+	c.cpuWindow.Add(usagePct)
+	if !c.cpuWindow.Full() {
+		return
+	}
+
+	if c.cpuWindow.CountAbove(cpuScaleUpThreshold) >= cpuRequiredHits {
+		c.scaleCPU(ctx, now, cpuStepCores)
+		return
+	}
+	if c.cpuWindow.CountBelow(cpuScaleDownThreshold) >= cpuRequiredHits {
+		c.scaleCPU(ctx, now, -cpuStepCores)
+		return
+	}
+}
+
+func (c *controller) scaleCPU(ctx context.Context, now time.Time, delta float64) {
+	target := c.runtime.CurrentCPU + delta
+	if delta > 0 && target > c.cfg.MaxCPU {
+		target = c.cfg.MaxCPU
+	}
+	if delta < 0 && target < c.cfg.MinCPU {
+		target = c.cfg.MinCPU
+	}
+	if floatEquals(target, c.runtime.CurrentCPU) {
+		c.cpuWindow.Reset()
+		return
+	}
+
+	nano := int64(target * 1e9)
+	if nano < 1 {
+		nano = 1
+	}
+	if err := c.docker.UpdateCPU(ctx, c.cfg.Name, nano); err != nil {
+		c.logger.Printf("container=%s cpu update failed: %v", c.cfg.Name, err)
+		return
+	}
+
+	c.runtime.CurrentCPU = target
+	cooldownUntil := now.Add(cpuCooldown)
+	c.runtime.CPUCooldownUntil = &cooldownUntil
+	c.cpuWindow.Reset()
+	c.logger.Printf("container=%s cpu scaled to %.2f cores", c.cfg.Name, target)
+}
+
+func floatEquals(a, b float64) bool {
+	const eps = 0.000001
+	if a > b {
+		return a-b < eps
+	}
+	return b-a < eps
 }

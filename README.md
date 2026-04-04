@@ -90,7 +90,9 @@ curl -s -X POST http://localhost:10006/v1/containers \
     "name": "my-app",
     "sleep_after_seconds": 30,
     "busy_window_seconds": 2,
-    "inspect_interval_seconds": 5
+    "inspect_interval_seconds": 5,
+    "min_cpu": 0.5,
+    "max_cpu": 2.0
   }'
 ```
 
@@ -99,6 +101,17 @@ Fields:
 - `sleep_after_seconds`: inactivity before pause (default `60`)
 - `busy_window_seconds`: traffic freshness window to mark `busy` (default `2`)
 - `inspect_interval_seconds`: interval to refresh IP/paused state (default `5`)
+- `min_cpu`: minimum CPU cores allocation (required for vertical scaling)
+- `max_cpu`: maximum CPU cores allocation (required for vertical scaling)
+
+### Vertical CPU Scaling (Fixed Policy)
+
+When `min_cpu`/`max_cpu` are set, the controller will:
+- poll CPU stats every 5s
+- scale up by `+0.2` cores when usage is ≥80% for 10 of the last 12 samples (≈60s)
+- scale down by `-0.2` cores when usage is ≤40% for 10 of the last 12 samples (≈60s)
+- enforce a 5-minute cooldown after any CPU change
+- never go below `min_cpu` or above `max_cpu`
 
 ### List all managed containers
 
@@ -149,7 +162,9 @@ curl -s -X POST http://localhost:10006/v1/containers \
     "name": "my-app",
     "sleep_after_seconds": 10,
     "busy_window_seconds": 2,
-    "inspect_interval_seconds": 3
+    "inspect_interval_seconds": 3,
+    "min_cpu": 0.5,
+    "max_cpu": 2.0
   }' | jq
 ```
 

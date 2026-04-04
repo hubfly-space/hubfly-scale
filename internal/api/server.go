@@ -63,6 +63,14 @@ func (s *Server) handleContainers(w http.ResponseWriter, r *http.Request) {
 		if req.InspectIntervalSecs <= 0 {
 			req.InspectIntervalSecs = 5
 		}
+		if req.MinCPU <= 0 || req.MaxCPU <= 0 {
+			respondJSON(w, http.StatusBadRequest, map[string]string{"error": "min_cpu and max_cpu are required"})
+			return
+		}
+		if req.MaxCPU < req.MinCPU {
+			respondJSON(w, http.StatusBadRequest, map[string]string{"error": "max_cpu must be >= min_cpu"})
+			return
+		}
 
 		cfg := req.ToInternal()
 		if err := s.manager.StartOrRestart(r.Context(), cfg); err != nil {

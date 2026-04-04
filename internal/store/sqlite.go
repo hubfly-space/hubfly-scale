@@ -52,6 +52,8 @@ CREATE TABLE IF NOT EXISTS containers (
   sleep_after_seconds INTEGER NOT NULL,
   busy_window_seconds INTEGER NOT NULL,
   inspect_interval_seconds INTEGER NOT NULL,
+  min_cpu REAL NOT NULL DEFAULT 0,
+  max_cpu REAL NOT NULL DEFAULT 0,
   created_at DATETIME NOT NULL,
   updated_at DATETIME NOT NULL
 );
@@ -63,6 +65,8 @@ CREATE TABLE IF NOT EXISTS container_runtime (
   last_traffic_at DATETIME,
   last_state_change_at DATETIME NOT NULL,
   paused INTEGER NOT NULL DEFAULT 0,
+  current_cpu REAL NOT NULL DEFAULT 0,
+  cpu_cooldown_until DATETIME,
   updated_at DATETIME NOT NULL,
   FOREIGN KEY(name) REFERENCES containers(name) ON DELETE CASCADE
 );
@@ -73,29 +77,76 @@ CREATE INDEX IF NOT EXISTS idx_runtime_last_traffic ON container_runtime(last_tr
 	if err != nil {
 		return fmt.Errorf("migrate sqlite: %w", err)
 	}
+	if err := s.ensureColumn(ctx, "containers", "min_cpu", "REAL NOT NULL DEFAULT 0"); err != nil {
+		return err
+	}
+	if err := s.ensureColumn(ctx, "containers", "max_cpu", "REAL NOT NULL DEFAULT 0"); err != nil {
+		return err
+	}
+	if err := s.ensureColumn(ctx, "container_runtime", "current_cpu", "REAL NOT NULL DEFAULT 0"); err != nil {
+		return err
+	}
+	if err := s.ensureColumn(ctx, "container_runtime", "cpu_cooldown_until", "DATETIME"); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (s *SQLiteStore) ensureColumn(ctx context.Context, table, column, def string) error {
+	rows, err := s.db.QueryContext(ctx, fmt.Sprintf("PRAGMA table_info(%s)", table))
+	if err != nil {
+		return fmt.Errorf("inspect table %s: %w", table, err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var (
+			cid        int
+			name       string
+			colType    string
+			notNull    int
+			defaultVal sql.NullString
+			pk         int
+		)
+		if err := rows.Scan(&cid, &name, &colType, &notNull, &defaultVal, &pk); err != nil {
+			return fmt.Errorf("scan table info %s: %w", table, err)
+		}
+		if name == column {
+			return nil
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("iterate table info %s: %w", table, err)
+	}
+
+	if _, err := s.db.ExecContext(ctx, fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s %s", table, column, def)); err != nil {
+		return fmt.Errorf("add column %s.%s: %w", table, column, err)
+	}
 	return nil
 }
 
 func (s *SQLiteStore) UpsertContainer(ctx context.Context, cfg model.ContainerConfig) error {
 	now := time.Now().UTC()
 	_, err := s.db.ExecContext(ctx, `
-INSERT INTO containers (name, sleep_after_seconds, busy_window_seconds, inspect_interval_seconds, created_at, updated_at)
-VALUES (?, ?, ?, ?, ?, ?)
+INSERT INTO containers (name, sleep_after_seconds, busy_window_seconds, inspect_interval_seconds, min_cpu, max_cpu, created_at, updated_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(name) DO UPDATE SET
   sleep_after_seconds=excluded.sleep_after_seconds,
   busy_window_seconds=excluded.busy_window_seconds,
   inspect_interval_seconds=excluded.inspect_interval_seconds,
+  min_cpu=excluded.min_cpu,
+  max_cpu=excluded.max_cpu,
   updated_at=excluded.updated_at
-`, cfg.Name, int64(cfg.SleepAfter/time.Second), int64(cfg.BusyWindow/time.Second), int64(cfg.InspectInterval/time.Second), now, now)
+`, cfg.Name, int64(cfg.SleepAfter/time.Second), int64(cfg.BusyWindow/time.Second), int64(cfg.InspectInterval/time.Second), cfg.MinCPU, cfg.MaxCPU, now, now)
 	if err != nil {
 		return fmt.Errorf("upsert container: %w", err)
 	}
 
 	_, err = s.db.ExecContext(ctx, `
-INSERT INTO container_runtime (name, status, last_state_change_at, updated_at)
-VALUES (?, ?, ?, ?)
+INSERT INTO container_runtime (name, status, last_state_change_at, updated_at, current_cpu)
+VALUES (?, ?, ?, ?, ?)
 ON CONFLICT(name) DO NOTHING
-`, cfg.Name, model.StatusIdle, now, now)
+`, cfg.Name, model.StatusIdle, now, now, cfg.MinCPU)
 	if err != nil {
 		return fmt.Errorf("ensure runtime row: %w", err)
 	}
@@ -106,8 +157,8 @@ ON CONFLICT(name) DO NOTHING
 func (s *SQLiteStore) ListContainers(ctx context.Context) ([]model.ContainerInfo, error) {
 	rows, err := s.db.QueryContext(ctx, `
 SELECT
-  c.name, c.sleep_after_seconds, c.busy_window_seconds, c.inspect_interval_seconds,
-  r.current_ip, r.status, r.last_traffic_at, r.last_state_change_at, r.paused, r.updated_at
+  c.name, c.sleep_after_seconds, c.busy_window_seconds, c.inspect_interval_seconds, c.min_cpu, c.max_cpu,
+  r.current_ip, r.status, r.last_traffic_at, r.last_state_change_at, r.paused, r.current_cpu, r.cpu_cooldown_until, r.updated_at
 FROM containers c
 JOIN container_runtime r ON c.name = r.name
 ORDER BY c.name ASC
@@ -124,11 +175,15 @@ ORDER BY c.name ASC
 			sleepAfterSeconds      int64
 			busyWindowSeconds      int64
 			inspectIntervalSeconds int64
+			minCPU                 float64
+			maxCPU                 float64
 			ip                     string
 			status                 string
 			lastTrafficNullable    sql.NullTime
 			lastStateChange        time.Time
 			pausedInt              int
+			currentCPU             float64
+			cooldownNullable       sql.NullTime
 			updatedAt              time.Time
 		)
 		if err := rows.Scan(
@@ -136,11 +191,15 @@ ORDER BY c.name ASC
 			&sleepAfterSeconds,
 			&busyWindowSeconds,
 			&inspectIntervalSeconds,
+			&minCPU,
+			&maxCPU,
 			&ip,
 			&status,
 			&lastTrafficNullable,
 			&lastStateChange,
 			&pausedInt,
+			&currentCPU,
+			&cooldownNullable,
 			&updatedAt,
 		); err != nil {
 			return nil, fmt.Errorf("scan container row: %w", err)
@@ -158,6 +217,8 @@ ORDER BY c.name ASC
 				SleepAfter:      time.Duration(sleepAfterSeconds) * time.Second,
 				BusyWindow:      time.Duration(busyWindowSeconds) * time.Second,
 				InspectInterval: time.Duration(inspectIntervalSeconds) * time.Second,
+				MinCPU:          minCPU,
+				MaxCPU:          maxCPU,
 			},
 			Runtime: model.ContainerRuntime{
 				Name:              name,
@@ -166,9 +227,14 @@ ORDER BY c.name ASC
 				LastTrafficAt:     lastTraffic,
 				LastStateChangeAt: lastStateChange,
 				Paused:            pausedInt == 1,
+				CurrentCPU:        currentCPU,
 				UpdatedAt:         updatedAt,
 			},
 		})
+		if cooldownNullable.Valid {
+			t := cooldownNullable.Time
+			out[len(out)-1].Runtime.CPUCooldownUntil = &t
+		}
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate container rows: %w", err)
@@ -180,8 +246,8 @@ ORDER BY c.name ASC
 func (s *SQLiteStore) GetContainer(ctx context.Context, name string) (model.ContainerInfo, error) {
 	row := s.db.QueryRowContext(ctx, `
 SELECT
-  c.name, c.sleep_after_seconds, c.busy_window_seconds, c.inspect_interval_seconds,
-  r.current_ip, r.status, r.last_traffic_at, r.last_state_change_at, r.paused, r.updated_at
+  c.name, c.sleep_after_seconds, c.busy_window_seconds, c.inspect_interval_seconds, c.min_cpu, c.max_cpu,
+  r.current_ip, r.status, r.last_traffic_at, r.last_state_change_at, r.paused, r.current_cpu, r.cpu_cooldown_until, r.updated_at
 FROM containers c
 JOIN container_runtime r ON c.name = r.name
 WHERE c.name = ?
@@ -192,19 +258,27 @@ WHERE c.name = ?
 		sleepAfterSeconds      int64
 		busyWindowSeconds      int64
 		inspectIntervalSeconds int64
+		minCPU                 float64
+		maxCPU                 float64
 		lastTrafficNullable    sql.NullTime
 		pausedInt              int
+		currentCPU             float64
+		cooldownNullable       sql.NullTime
 	)
 	if err := row.Scan(
 		&res.Config.Name,
 		&sleepAfterSeconds,
 		&busyWindowSeconds,
 		&inspectIntervalSeconds,
+		&minCPU,
+		&maxCPU,
 		&res.Runtime.CurrentIP,
 		&res.Runtime.Status,
 		&lastTrafficNullable,
 		&res.Runtime.LastStateChangeAt,
 		&pausedInt,
+		&currentCPU,
+		&cooldownNullable,
 		&res.Runtime.UpdatedAt,
 	); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -215,11 +289,18 @@ WHERE c.name = ?
 	res.Config.SleepAfter = time.Duration(sleepAfterSeconds) * time.Second
 	res.Config.BusyWindow = time.Duration(busyWindowSeconds) * time.Second
 	res.Config.InspectInterval = time.Duration(inspectIntervalSeconds) * time.Second
+	res.Config.MinCPU = minCPU
+	res.Config.MaxCPU = maxCPU
 	res.Runtime.Name = res.Config.Name
 	res.Runtime.Paused = pausedInt == 1
+	res.Runtime.CurrentCPU = currentCPU
 	if lastTrafficNullable.Valid {
 		t := lastTrafficNullable.Time
 		res.Runtime.LastTrafficAt = &t
+	}
+	if cooldownNullable.Valid {
+		t := cooldownNullable.Time
+		res.Runtime.CPUCooldownUntil = &t
 	}
 
 	return res, nil
@@ -229,9 +310,9 @@ func (s *SQLiteStore) UpdateRuntime(ctx context.Context, rt model.ContainerRunti
 	now := time.Now().UTC()
 	_, err := s.db.ExecContext(ctx, `
 UPDATE container_runtime
-SET current_ip=?, status=?, last_traffic_at=?, last_state_change_at=?, paused=?, updated_at=?
+SET current_ip=?, status=?, last_traffic_at=?, last_state_change_at=?, paused=?, current_cpu=?, cpu_cooldown_until=?, updated_at=?
 WHERE name=?
-`, rt.CurrentIP, rt.Status, rt.LastTrafficAt, rt.LastStateChangeAt, boolToInt(rt.Paused), now, rt.Name)
+`, rt.CurrentIP, rt.Status, rt.LastTrafficAt, rt.LastStateChangeAt, boolToInt(rt.Paused), rt.CurrentCPU, rt.CPUCooldownUntil, now, rt.Name)
 	if err != nil {
 		return fmt.Errorf("update runtime: %w", err)
 	}

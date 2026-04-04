@@ -59,6 +59,12 @@ func (m *Manager) StartOrRestart(ctx context.Context, cfg model.ContainerConfig)
 	if cfg.InspectInterval <= 0 {
 		cfg.InspectInterval = 5 * time.Second
 	}
+	if cfg.MinCPU < 0 || cfg.MaxCPU < 0 {
+		return fmt.Errorf("min_cpu/max_cpu must be >= 0")
+	}
+	if cfg.MinCPU > 0 && cfg.MaxCPU > 0 && cfg.MaxCPU < cfg.MinCPU {
+		return fmt.Errorf("max_cpu must be >= min_cpu")
+	}
 
 	if err := m.store.UpsertContainer(ctx, cfg); err != nil {
 		return err
