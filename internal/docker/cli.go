@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -18,6 +19,9 @@ import (
 type Client interface {
 	InspectIP(ctx context.Context, containerName string) (string, error)
 	InspectPaused(ctx context.Context, containerName string) (bool, error)
+	InspectPID(ctx context.Context, containerName string) (int, error)
+	InspectSandboxKey(ctx context.Context, containerName string) (string, error)
+	InspectNetworkBridge(ctx context.Context, networkName string) (string, error)
 	Pause(ctx context.Context, containerName string) error
 	Unpause(ctx context.Context, containerName string) error
 	Stats(ctx context.Context, containerName string) (ContainerStats, error)
@@ -54,6 +58,56 @@ func (c *CLIClient) InspectPaused(ctx context.Context, containerName string) (bo
 		return false, err
 	}
 	return strings.TrimSpace(out) == "true", nil
+}
+
+func (c *CLIClient) InspectPID(ctx context.Context, containerName string) (int, error) {
+	out, err := runDocker(ctx, "inspect", "-f", "{{.State.Pid}}", containerName)
+	if err != nil {
+		return 0, err
+	}
+	out = strings.TrimSpace(out)
+	if out == "" {
+		return 0, fmt.Errorf("empty pid")
+	}
+	pid, err := strconv.Atoi(out)
+	if err != nil {
+		return 0, fmt.Errorf("parse pid: %w", err)
+	}
+	return pid, nil
+}
+
+func (c *CLIClient) InspectSandboxKey(ctx context.Context, containerName string) (string, error) {
+	out, err := runDocker(ctx, "inspect", "-f", "{{.NetworkSettings.SandboxKey}}", containerName)
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(out), nil
+}
+
+func (c *CLIClient) InspectNetworkBridge(ctx context.Context, networkName string) (string, error) {
+	out, err := runDocker(ctx, "network", "inspect", "-f", `{{index .Options "com.docker.network.bridge.name"}}`, networkName)
+	if err != nil {
+		return "", err
+	}
+	bridge := strings.TrimSpace(out)
+	if bridge != "" {
+		return bridge, nil
+	}
+	if networkName == "bridge" {
+		return "docker0", nil
+	}
+	id, err := runDocker(ctx, "network", "inspect", "-f", "{{.Id}}", networkName)
+	if err != nil {
+		return "", err
+	}
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return "", fmt.Errorf("empty network id")
+	}
+	if len(id) > 12 {
+		id = id[:12]
+	}
+	return "br-" + id, nil
 }
 
 func (c *CLIClient) Pause(ctx context.Context, containerName string) error {

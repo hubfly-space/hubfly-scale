@@ -65,3 +65,43 @@ type ContainerInfo struct {
 	Config  ContainerConfig  `json:"config"`
 	Runtime ContainerRuntime `json:"runtime"`
 }
+
+type VerticalScaleConfig struct {
+	Name   string  `json:"name"`
+	MinCPU float64 `json:"min_cpu"`
+	MaxCPU float64 `json:"max_cpu"`
+}
+
+type VerticalScaleConfigAPI struct {
+	Name   string  `json:"name"`
+	MinCPU float64 `json:"min_cpu"`
+	MaxCPU float64 `json:"max_cpu"`
+}
+
+func (c VerticalScaleConfigAPI) ToInternal() VerticalScaleConfig {
+	return VerticalScaleConfig{
+		Name:   c.Name,
+		MinCPU: c.MinCPU,
+		MaxCPU: c.MaxCPU,
+	}
+}
+
+func (c VerticalScaleConfig) ToAPI() VerticalScaleConfigAPI {
+	return VerticalScaleConfigAPI{
+		Name:   c.Name,
+		MinCPU: c.MinCPU,
+		MaxCPU: c.MaxCPU,
+	}
+}
+
+type VerticalScaleRuntime struct {
+	Name             string     `json:"name"`
+	CurrentCPU       float64    `json:"current_cpu"`
+	CPUCooldownUntil *time.Time `json:"cpu_cooldown_until,omitempty"`
+	UpdatedAt        time.Time  `json:"updated_at"`
+}
+
+type VerticalScaleInfo struct {
+	Config  VerticalScaleConfig  `json:"config"`
+	Runtime VerticalScaleRuntime `json:"runtime"`
+}
