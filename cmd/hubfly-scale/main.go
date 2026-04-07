@@ -12,10 +12,12 @@ import (
 	"time"
 
 	"hubfly-scale/internal/api"
+	"hubfly-scale/internal/bandwidth"
 	"hubfly-scale/internal/docker"
 	"hubfly-scale/internal/scaler"
 	"hubfly-scale/internal/store"
 	"hubfly-scale/internal/traffic"
+	"hubfly-scale/internal/vscale"
 )
 
 var Version = "dev"
@@ -47,8 +49,14 @@ func main() {
 	if err := manager.LoadAndStart(context.Background()); err != nil {
 		logger.Fatalf("load containers: %v", err)
 	}
+	vscaleManager := vscale.NewManager(st, dockerClient, logger)
+	if err := vscaleManager.LoadAndStart(context.Background()); err != nil {
+		logger.Fatalf("load vertical containers: %v", err)
+	}
 
-	server := api.NewServer(st, manager, logger)
+	limiter := bandwidth.NewLimiter(dockerClient, logger)
+	netLimiter := bandwidth.NewNetworkLimiter(dockerClient, logger)
+	server := api.NewServer(st, manager, limiter, netLimiter, vscaleManager, logger)
 	httpServer := &http.Server{
 		Addr:              addr,
 		Handler:           server.Routes(),
@@ -67,6 +75,7 @@ func main() {
 	<-sigCh
 
 	manager.StopAll()
+	vscaleManager.StopAll()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	if err := httpServer.Shutdown(ctx); err != nil {

@@ -90,9 +90,7 @@ curl -s -X POST http://localhost:10006/v1/containers \
     "name": "my-app",
     "sleep_after_seconds": 30,
     "busy_window_seconds": 2,
-    "inspect_interval_seconds": 5,
-    "min_cpu": 0.5,
-    "max_cpu": 2.0
+    "inspect_interval_seconds": 5
   }'
 ```
 
@@ -101,12 +99,35 @@ Fields:
 - `sleep_after_seconds`: inactivity before pause (default `60`)
 - `busy_window_seconds`: traffic freshness window to mark `busy` (default `2`)
 - `inspect_interval_seconds`: interval to refresh IP/paused state (default `5`)
-- `min_cpu`: minimum CPU cores allocation (required for vertical scaling)
-- `max_cpu`: maximum CPU cores allocation (required for vertical scaling)
+- Vertical CPU scaling is configured separately (see below).
 
 ### Vertical CPU Scaling (Fixed Policy)
 
-When `min_cpu`/`max_cpu` are set, the controller will:
+Register a container for vertical CPU scaling (separate from sleep registration):
+
+```bash
+curl -s -X POST http://localhost:10006/v1/vertical/containers \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "name": "my-app",
+    "min_cpu": 0.5,
+    "max_cpu": 2.0
+  }'
+```
+
+List vertical scaling configs:
+
+```bash
+curl -s http://localhost:10006/v1/vertical/containers | jq
+```
+
+Remove a vertical scaling config:
+
+```bash
+curl -s -X DELETE http://localhost:10006/v1/vertical/containers/my-app
+```
+
+Policy:
 - poll CPU stats every 5s
 - scale up by `+0.2` cores when usage is ≥80% for 10 of the last 12 samples (≈60s)
 - scale down by `-0.2` cores when usage is ≤40% for 10 of the last 12 samples (≈60s)
@@ -137,6 +158,39 @@ curl -s -X POST http://localhost:10006/v1/containers/my-app/reload
 curl -s -X DELETE http://localhost:10006/v1/containers/my-app
 ```
 
+### Update container bandwidth limits (egress/ingress)
+
+```bash
+curl -s -X POST http://localhost:10006/v1/containers/my-app/bandwidth \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "egress_mbps": 10,
+    "ingress_mbps": 5
+  }'
+```
+
+Notes:
+- Requires host privileges to run `tc`, `ip`, and `nsenter`.
+- Egress and ingress are optional; at least one must be > 0.
+- Ingress shaping uses a per-container IFB device (`ifb<ifindex>`).
+- This endpoint does not require prior container registration.
+
+### Update network bandwidth limits (shared across containers)
+
+```bash
+curl -s -X POST http://localhost:10006/v1/networks/my-project/bandwidth \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "egress_mbps": 50,
+    "ingress_mbps": 50
+  }'
+```
+
+Notes:
+- Applies a shared cap on the network bridge for all containers in that network.
+- Uses HTB + fq_codel (or sfq fallback) for fairness.
+- This cap applies to total bridge egress (shared up/down pool).
+
 ## Quick End-to-End Test with Curl
 
 Use a container with an open port (example: nginx on `8081`).
@@ -162,9 +216,7 @@ curl -s -X POST http://localhost:10006/v1/containers \
     "name": "my-app",
     "sleep_after_seconds": 10,
     "busy_window_seconds": 2,
-    "inspect_interval_seconds": 3,
-    "min_cpu": 0.5,
-    "max_cpu": 2.0
+    "inspect_interval_seconds": 3
   }' | jq
 ```
 
