@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"sync"
 	"time"
 
 	_ "github.com/mattn/go-sqlite3"
@@ -14,6 +15,12 @@ import (
 
 type SQLiteStore struct {
 	db *sql.DB
+
+	runtimeQueue     chan model.ContainerRuntime
+	runtimeStop      chan struct{}
+	runtimeDone      chan struct{}
+	runtimeStartOnce sync.Once
+	runtimeStopOnce  sync.Once
 }
 
 func NewSQLiteStore(dsn string) (*SQLiteStore, error) {
@@ -38,10 +45,12 @@ PRAGMA busy_timeout = 5000;
 		_ = db.Close()
 		return nil, err
 	}
+	s.startRuntimeBatcher()
 	return s, nil
 }
 
 func (s *SQLiteStore) Close() error {
+	s.stopRuntimeBatcher()
 	return s.db.Close()
 }
 
@@ -69,6 +78,22 @@ CREATE TABLE IF NOT EXISTS container_runtime (
   cpu_cooldown_until DATETIME,
   updated_at DATETIME NOT NULL,
   FOREIGN KEY(name) REFERENCES containers(name) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS vertical_containers (
+  name TEXT PRIMARY KEY,
+  min_cpu REAL NOT NULL DEFAULT 0,
+  max_cpu REAL NOT NULL DEFAULT 0,
+  created_at DATETIME NOT NULL,
+  updated_at DATETIME NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS vertical_runtime (
+  name TEXT PRIMARY KEY,
+  current_cpu REAL NOT NULL DEFAULT 0,
+  cpu_cooldown_until DATETIME,
+  updated_at DATETIME NOT NULL,
+  FOREIGN KEY(name) REFERENCES vertical_containers(name) ON DELETE CASCADE
 );
 
 CREATE INDEX IF NOT EXISTS idx_runtime_status ON container_runtime(status);
@@ -315,6 +340,242 @@ WHERE name=?
 `, rt.CurrentIP, rt.Status, rt.LastTrafficAt, rt.LastStateChangeAt, boolToInt(rt.Paused), rt.CurrentCPU, rt.CPUCooldownUntil, now, rt.Name)
 	if err != nil {
 		return fmt.Errorf("update runtime: %w", err)
+	}
+	return nil
+}
+
+func (s *SQLiteStore) QueueRuntimeUpdate(rt model.ContainerRuntime) error {
+	s.startRuntimeBatcher()
+	select {
+	case s.runtimeQueue <- rt:
+		return nil
+	default:
+		return s.UpdateRuntime(context.Background(), rt)
+	}
+}
+
+func (s *SQLiteStore) startRuntimeBatcher() {
+	s.runtimeStartOnce.Do(func() {
+		s.runtimeQueue = make(chan model.ContainerRuntime, 1024)
+		s.runtimeStop = make(chan struct{})
+		s.runtimeDone = make(chan struct{})
+		go s.runtimeBatchLoop()
+	})
+}
+
+func (s *SQLiteStore) stopRuntimeBatcher() {
+	if s.runtimeStop == nil {
+		return
+	}
+	s.runtimeStopOnce.Do(func() {
+		close(s.runtimeStop)
+		<-s.runtimeDone
+	})
+}
+
+func (s *SQLiteStore) runtimeBatchLoop() {
+	const (
+		flushInterval = 1 * time.Second
+		maxBatchSize  = 100
+	)
+	ticker := time.NewTicker(flushInterval)
+	defer ticker.Stop()
+
+	pending := make(map[string]model.ContainerRuntime)
+
+	flush := func() {
+		if len(pending) == 0 {
+			return
+		}
+		ctx := context.Background()
+		now := time.Now().UTC()
+		tx, err := s.db.BeginTx(ctx, nil)
+		if err != nil {
+			pending = make(map[string]model.ContainerRuntime)
+			return
+		}
+		stmt, err := tx.PrepareContext(ctx, `
+UPDATE container_runtime
+SET current_ip=?, status=?, last_traffic_at=?, last_state_change_at=?, paused=?, current_cpu=?, cpu_cooldown_until=?, updated_at=?
+WHERE name=?
+`)
+		if err != nil {
+			_ = tx.Rollback()
+			pending = make(map[string]model.ContainerRuntime)
+			return
+		}
+		for _, rt := range pending {
+			_, _ = stmt.ExecContext(ctx,
+				rt.CurrentIP,
+				rt.Status,
+				rt.LastTrafficAt,
+				rt.LastStateChangeAt,
+				boolToInt(rt.Paused),
+				rt.CurrentCPU,
+				rt.CPUCooldownUntil,
+				now,
+				rt.Name,
+			)
+		}
+		_ = stmt.Close()
+		_ = tx.Commit()
+		pending = make(map[string]model.ContainerRuntime)
+	}
+
+	for {
+		select {
+		case rt := <-s.runtimeQueue:
+			if rt.Name == "" {
+				continue
+			}
+			pending[rt.Name] = rt
+			if len(pending) >= maxBatchSize {
+				flush()
+			}
+		case <-ticker.C:
+			flush()
+		case <-s.runtimeStop:
+			flush()
+			close(s.runtimeDone)
+			return
+		}
+	}
+}
+
+func (s *SQLiteStore) UpsertVertical(ctx context.Context, cfg model.VerticalScaleConfig) error {
+	now := time.Now().UTC()
+	_, err := s.db.ExecContext(ctx, `
+INSERT INTO vertical_containers (name, min_cpu, max_cpu, created_at, updated_at)
+VALUES (?, ?, ?, ?, ?)
+ON CONFLICT(name) DO UPDATE SET
+  min_cpu=excluded.min_cpu,
+  max_cpu=excluded.max_cpu,
+  updated_at=excluded.updated_at
+`, cfg.Name, cfg.MinCPU, cfg.MaxCPU, now, now)
+	if err != nil {
+		return fmt.Errorf("upsert vertical: %w", err)
+	}
+
+	_, err = s.db.ExecContext(ctx, `
+INSERT INTO vertical_runtime (name, current_cpu, updated_at)
+VALUES (?, ?, ?)
+ON CONFLICT(name) DO NOTHING
+`, cfg.Name, cfg.MinCPU, now)
+	if err != nil {
+		return fmt.Errorf("ensure vertical runtime: %w", err)
+	}
+	return nil
+}
+
+func (s *SQLiteStore) ListVertical(ctx context.Context) ([]model.VerticalScaleInfo, error) {
+	rows, err := s.db.QueryContext(ctx, `
+SELECT
+  c.name, c.min_cpu, c.max_cpu,
+  r.current_cpu, r.cpu_cooldown_until, r.updated_at
+FROM vertical_containers c
+JOIN vertical_runtime r ON c.name = r.name
+ORDER BY c.name ASC
+`)
+	if err != nil {
+		return nil, fmt.Errorf("list vertical: %w", err)
+	}
+	defer rows.Close()
+
+	var out []model.VerticalScaleInfo
+	for rows.Next() {
+		var (
+			name             string
+			minCPU           float64
+			maxCPU           float64
+			currentCPU       float64
+			cooldownNullable sql.NullTime
+			updatedAt        time.Time
+		)
+		if err := rows.Scan(&name, &minCPU, &maxCPU, &currentCPU, &cooldownNullable, &updatedAt); err != nil {
+			return nil, fmt.Errorf("scan vertical row: %w", err)
+		}
+		info := model.VerticalScaleInfo{
+			Config: model.VerticalScaleConfig{
+				Name:   name,
+				MinCPU: minCPU,
+				MaxCPU: maxCPU,
+			},
+			Runtime: model.VerticalScaleRuntime{
+				Name:       name,
+				CurrentCPU: currentCPU,
+				UpdatedAt:  updatedAt,
+			},
+		}
+		if cooldownNullable.Valid {
+			t := cooldownNullable.Time
+			info.Runtime.CPUCooldownUntil = &t
+		}
+		out = append(out, info)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate vertical rows: %w", err)
+	}
+	return out, nil
+}
+
+func (s *SQLiteStore) GetVertical(ctx context.Context, name string) (model.VerticalScaleInfo, error) {
+	row := s.db.QueryRowContext(ctx, `
+SELECT
+  c.name, c.min_cpu, c.max_cpu,
+  r.current_cpu, r.cpu_cooldown_until, r.updated_at
+FROM vertical_containers c
+JOIN vertical_runtime r ON c.name = r.name
+WHERE c.name = ?
+`, name)
+
+	var (
+		res              model.VerticalScaleInfo
+		minCPU           float64
+		maxCPU           float64
+		currentCPU       float64
+		cooldownNullable sql.NullTime
+	)
+	if err := row.Scan(&res.Config.Name, &minCPU, &maxCPU, &currentCPU, &cooldownNullable, &res.Runtime.UpdatedAt); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return model.VerticalScaleInfo{}, ErrNotFound
+		}
+		return model.VerticalScaleInfo{}, fmt.Errorf("get vertical: %w", err)
+	}
+	res.Config.MinCPU = minCPU
+	res.Config.MaxCPU = maxCPU
+	res.Runtime.Name = res.Config.Name
+	res.Runtime.CurrentCPU = currentCPU
+	if cooldownNullable.Valid {
+		t := cooldownNullable.Time
+		res.Runtime.CPUCooldownUntil = &t
+	}
+	return res, nil
+}
+
+func (s *SQLiteStore) UpdateVerticalRuntime(ctx context.Context, rt model.VerticalScaleRuntime) error {
+	now := time.Now().UTC()
+	_, err := s.db.ExecContext(ctx, `
+UPDATE vertical_runtime
+SET current_cpu=?, cpu_cooldown_until=?, updated_at=?
+WHERE name=?
+`, rt.CurrentCPU, rt.CPUCooldownUntil, now, rt.Name)
+	if err != nil {
+		return fmt.Errorf("update vertical runtime: %w", err)
+	}
+	return nil
+}
+
+func (s *SQLiteStore) DeleteVertical(ctx context.Context, name string) error {
+	res, err := s.db.ExecContext(ctx, `DELETE FROM vertical_containers WHERE name = ?`, name)
+	if err != nil {
+		return fmt.Errorf("delete vertical: %w", err)
+	}
+	affected, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("delete vertical: %w", err)
+	}
+	if affected == 0 {
+		return ErrNotFound
 	}
 	return nil
 }
