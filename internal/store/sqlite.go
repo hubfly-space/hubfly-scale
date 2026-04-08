@@ -84,6 +84,8 @@ CREATE TABLE IF NOT EXISTS vertical_containers (
   name TEXT PRIMARY KEY,
   min_cpu REAL NOT NULL DEFAULT 0,
   max_cpu REAL NOT NULL DEFAULT 0,
+  min_mem_mb INTEGER NOT NULL DEFAULT 0,
+  max_mem_mb INTEGER NOT NULL DEFAULT 0,
   created_at DATETIME NOT NULL,
   updated_at DATETIME NOT NULL
 );
@@ -92,6 +94,8 @@ CREATE TABLE IF NOT EXISTS vertical_runtime (
   name TEXT PRIMARY KEY,
   current_cpu REAL NOT NULL DEFAULT 0,
   cpu_cooldown_until DATETIME,
+  current_mem_mb INTEGER NOT NULL DEFAULT 0,
+  mem_cooldown_until DATETIME,
   updated_at DATETIME NOT NULL,
   FOREIGN KEY(name) REFERENCES vertical_containers(name) ON DELETE CASCADE
 );
@@ -112,6 +116,18 @@ CREATE INDEX IF NOT EXISTS idx_runtime_last_traffic ON container_runtime(last_tr
 		return err
 	}
 	if err := s.ensureColumn(ctx, "container_runtime", "cpu_cooldown_until", "DATETIME"); err != nil {
+		return err
+	}
+	if err := s.ensureColumn(ctx, "vertical_containers", "min_mem_mb", "INTEGER NOT NULL DEFAULT 0"); err != nil {
+		return err
+	}
+	if err := s.ensureColumn(ctx, "vertical_containers", "max_mem_mb", "INTEGER NOT NULL DEFAULT 0"); err != nil {
+		return err
+	}
+	if err := s.ensureColumn(ctx, "vertical_runtime", "current_mem_mb", "INTEGER NOT NULL DEFAULT 0"); err != nil {
+		return err
+	}
+	if err := s.ensureColumn(ctx, "vertical_runtime", "mem_cooldown_until", "DATETIME"); err != nil {
 		return err
 	}
 	return nil
@@ -445,22 +461,24 @@ WHERE name=?
 func (s *SQLiteStore) UpsertVertical(ctx context.Context, cfg model.VerticalScaleConfig) error {
 	now := time.Now().UTC()
 	_, err := s.db.ExecContext(ctx, `
-INSERT INTO vertical_containers (name, min_cpu, max_cpu, created_at, updated_at)
-VALUES (?, ?, ?, ?, ?)
+INSERT INTO vertical_containers (name, min_cpu, max_cpu, min_mem_mb, max_mem_mb, created_at, updated_at)
+VALUES (?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(name) DO UPDATE SET
   min_cpu=excluded.min_cpu,
   max_cpu=excluded.max_cpu,
+  min_mem_mb=excluded.min_mem_mb,
+  max_mem_mb=excluded.max_mem_mb,
   updated_at=excluded.updated_at
-`, cfg.Name, cfg.MinCPU, cfg.MaxCPU, now, now)
+`, cfg.Name, cfg.MinCPU, cfg.MaxCPU, cfg.MinMemMB, cfg.MaxMemMB, now, now)
 	if err != nil {
 		return fmt.Errorf("upsert vertical: %w", err)
 	}
 
 	_, err = s.db.ExecContext(ctx, `
-INSERT INTO vertical_runtime (name, current_cpu, updated_at)
-VALUES (?, ?, ?)
+INSERT INTO vertical_runtime (name, current_cpu, current_mem_mb, updated_at)
+VALUES (?, ?, ?, ?)
 ON CONFLICT(name) DO NOTHING
-`, cfg.Name, cfg.MinCPU, now)
+`, cfg.Name, cfg.MinCPU, cfg.MinMemMB, now)
 	if err != nil {
 		return fmt.Errorf("ensure vertical runtime: %w", err)
 	}
@@ -470,8 +488,8 @@ ON CONFLICT(name) DO NOTHING
 func (s *SQLiteStore) ListVertical(ctx context.Context) ([]model.VerticalScaleInfo, error) {
 	rows, err := s.db.QueryContext(ctx, `
 SELECT
-  c.name, c.min_cpu, c.max_cpu,
-  r.current_cpu, r.cpu_cooldown_until, r.updated_at
+  c.name, c.min_cpu, c.max_cpu, c.min_mem_mb, c.max_mem_mb,
+  r.current_cpu, r.cpu_cooldown_until, r.current_mem_mb, r.mem_cooldown_until, r.updated_at
 FROM vertical_containers c
 JOIN vertical_runtime r ON c.name = r.name
 ORDER BY c.name ASC
@@ -484,31 +502,42 @@ ORDER BY c.name ASC
 	var out []model.VerticalScaleInfo
 	for rows.Next() {
 		var (
-			name             string
-			minCPU           float64
-			maxCPU           float64
-			currentCPU       float64
-			cooldownNullable sql.NullTime
-			updatedAt        time.Time
+			name                string
+			minCPU              float64
+			maxCPU              float64
+			minMemMB            int64
+			maxMemMB            int64
+			currentCPU          float64
+			cooldownNullable    sql.NullTime
+			currentMemMB        int64
+			memCooldownNullable sql.NullTime
+			updatedAt           time.Time
 		)
-		if err := rows.Scan(&name, &minCPU, &maxCPU, &currentCPU, &cooldownNullable, &updatedAt); err != nil {
+		if err := rows.Scan(&name, &minCPU, &maxCPU, &minMemMB, &maxMemMB, &currentCPU, &cooldownNullable, &currentMemMB, &memCooldownNullable, &updatedAt); err != nil {
 			return nil, fmt.Errorf("scan vertical row: %w", err)
 		}
 		info := model.VerticalScaleInfo{
 			Config: model.VerticalScaleConfig{
-				Name:   name,
-				MinCPU: minCPU,
-				MaxCPU: maxCPU,
+				Name:     name,
+				MinCPU:   minCPU,
+				MaxCPU:   maxCPU,
+				MinMemMB: minMemMB,
+				MaxMemMB: maxMemMB,
 			},
 			Runtime: model.VerticalScaleRuntime{
-				Name:       name,
-				CurrentCPU: currentCPU,
-				UpdatedAt:  updatedAt,
+				Name:         name,
+				CurrentCPU:   currentCPU,
+				CurrentMemMB: currentMemMB,
+				UpdatedAt:    updatedAt,
 			},
 		}
 		if cooldownNullable.Valid {
 			t := cooldownNullable.Time
 			info.Runtime.CPUCooldownUntil = &t
+		}
+		if memCooldownNullable.Valid {
+			t := memCooldownNullable.Time
+			info.Runtime.MemCooldownUntil = &t
 		}
 		out = append(out, info)
 	}
@@ -521,21 +550,25 @@ ORDER BY c.name ASC
 func (s *SQLiteStore) GetVertical(ctx context.Context, name string) (model.VerticalScaleInfo, error) {
 	row := s.db.QueryRowContext(ctx, `
 SELECT
-  c.name, c.min_cpu, c.max_cpu,
-  r.current_cpu, r.cpu_cooldown_until, r.updated_at
+  c.name, c.min_cpu, c.max_cpu, c.min_mem_mb, c.max_mem_mb,
+  r.current_cpu, r.cpu_cooldown_until, r.current_mem_mb, r.mem_cooldown_until, r.updated_at
 FROM vertical_containers c
 JOIN vertical_runtime r ON c.name = r.name
 WHERE c.name = ?
 `, name)
 
 	var (
-		res              model.VerticalScaleInfo
-		minCPU           float64
-		maxCPU           float64
-		currentCPU       float64
-		cooldownNullable sql.NullTime
+		res                 model.VerticalScaleInfo
+		minCPU              float64
+		maxCPU              float64
+		minMemMB            int64
+		maxMemMB            int64
+		currentCPU          float64
+		cooldownNullable    sql.NullTime
+		currentMemMB        int64
+		memCooldownNullable sql.NullTime
 	)
-	if err := row.Scan(&res.Config.Name, &minCPU, &maxCPU, &currentCPU, &cooldownNullable, &res.Runtime.UpdatedAt); err != nil {
+	if err := row.Scan(&res.Config.Name, &minCPU, &maxCPU, &minMemMB, &maxMemMB, &currentCPU, &cooldownNullable, &currentMemMB, &memCooldownNullable, &res.Runtime.UpdatedAt); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return model.VerticalScaleInfo{}, ErrNotFound
 		}
@@ -543,11 +576,18 @@ WHERE c.name = ?
 	}
 	res.Config.MinCPU = minCPU
 	res.Config.MaxCPU = maxCPU
+	res.Config.MinMemMB = minMemMB
+	res.Config.MaxMemMB = maxMemMB
 	res.Runtime.Name = res.Config.Name
 	res.Runtime.CurrentCPU = currentCPU
+	res.Runtime.CurrentMemMB = currentMemMB
 	if cooldownNullable.Valid {
 		t := cooldownNullable.Time
 		res.Runtime.CPUCooldownUntil = &t
+	}
+	if memCooldownNullable.Valid {
+		t := memCooldownNullable.Time
+		res.Runtime.MemCooldownUntil = &t
 	}
 	return res, nil
 }
@@ -556,9 +596,9 @@ func (s *SQLiteStore) UpdateVerticalRuntime(ctx context.Context, rt model.Vertic
 	now := time.Now().UTC()
 	_, err := s.db.ExecContext(ctx, `
 UPDATE vertical_runtime
-SET current_cpu=?, cpu_cooldown_until=?, updated_at=?
+SET current_cpu=?, cpu_cooldown_until=?, current_mem_mb=?, mem_cooldown_until=?, updated_at=?
 WHERE name=?
-`, rt.CurrentCPU, rt.CPUCooldownUntil, now, rt.Name)
+`, rt.CurrentCPU, rt.CPUCooldownUntil, rt.CurrentMemMB, rt.MemCooldownUntil, now, rt.Name)
 	if err != nil {
 		return fmt.Errorf("update vertical runtime: %w", err)
 	}

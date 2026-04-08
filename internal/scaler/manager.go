@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"hubfly-scale/internal/docker"
+	"hubfly-scale/internal/externalstatus"
 	"hubfly-scale/internal/model"
 	"hubfly-scale/internal/store"
 	"hubfly-scale/internal/traffic"
@@ -18,17 +19,19 @@ type Manager struct {
 	docker  docker.Client
 	watcher *traffic.Watcher
 	logger  *log.Logger
+	status  externalstatus.Reporter
 
 	mu          sync.Mutex
 	controllers map[string]context.CancelFunc
 }
 
-func NewManager(st *store.SQLiteStore, dc docker.Client, watcher *traffic.Watcher, logger *log.Logger) *Manager {
+func NewManager(st *store.SQLiteStore, dc docker.Client, watcher *traffic.Watcher, logger *log.Logger, status externalstatus.Reporter) *Manager {
 	return &Manager{
 		store:       st,
 		docker:      dc,
 		watcher:     watcher,
 		logger:      logger,
+		status:      status,
 		controllers: make(map[string]context.CancelFunc),
 	}
 }
@@ -79,7 +82,7 @@ func (m *Manager) StartOrRestart(ctx context.Context, cfg model.ContainerConfig)
 	m.controllers[cfg.Name] = cancel
 	m.mu.Unlock()
 
-	ctrl := newController(cfg, m.store, m.docker, m.watcher, m.logger, m.Unregister)
+	ctrl := newController(cfg, m.store, m.docker, m.watcher, m.logger, m.status, m.Unregister)
 	go ctrl.run(runCtx)
 	return nil
 }

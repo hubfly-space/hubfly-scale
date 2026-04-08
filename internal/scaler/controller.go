@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"hubfly-scale/internal/docker"
+	"hubfly-scale/internal/externalstatus"
 	"hubfly-scale/internal/model"
 	"hubfly-scale/internal/store"
 	"hubfly-scale/internal/traffic"
@@ -20,15 +21,17 @@ type controller struct {
 	docker  docker.Client
 	watcher *traffic.Watcher
 	logger  *log.Logger
+	status  externalstatus.Reporter
 	drop    func(context.Context, string) error
 
 	mu      sync.Mutex
 	runtime model.ContainerRuntime
 
 	inspectFailures int
+	dockerID        string
 }
 
-func newController(cfg model.ContainerConfig, st *store.SQLiteStore, dc docker.Client, w *traffic.Watcher, logger *log.Logger, drop func(context.Context, string) error) *controller {
+func newController(cfg model.ContainerConfig, st *store.SQLiteStore, dc docker.Client, w *traffic.Watcher, logger *log.Logger, status externalstatus.Reporter, drop func(context.Context, string) error) *controller {
 	now := time.Now().UTC()
 	return &controller{
 		cfg:     cfg,
@@ -36,6 +39,7 @@ func newController(cfg model.ContainerConfig, st *store.SQLiteStore, dc docker.C
 		docker:  dc,
 		watcher: w,
 		logger:  logger,
+		status:  status,
 		drop:    drop,
 		runtime: model.ContainerRuntime{
 			Name:              cfg.Name,
@@ -127,6 +131,7 @@ func (c *controller) run(ctx context.Context) {
 				c.runtime.Paused = true
 				c.setStatus(now, model.StatusSleeping)
 				c.logger.Printf("container=%s paused after inactivity", c.cfg.Name)
+				c.notifyStatus(ctx, "sleeping")
 			}
 		}
 		return false
@@ -159,6 +164,7 @@ func (c *controller) run(ctx context.Context) {
 				} else {
 					c.runtime.Paused = false
 					c.logger.Printf("container=%s unpaused on traffic", c.cfg.Name)
+					c.notifyStatus(ctx, "running")
 				}
 			}
 			c.setStatus(now, model.StatusBusy)
@@ -201,4 +207,24 @@ func (c *controller) snapshot() model.ContainerRuntime {
 	cp := c.runtime
 	cp.UpdatedAt = time.Now().UTC()
 	return cp
+}
+
+func (c *controller) notifyStatus(ctx context.Context, status string) {
+	if c.status == nil {
+		return
+	}
+	if c.dockerID == "" {
+		id, err := c.docker.InspectID(ctx, c.cfg.Name)
+		if err != nil {
+			c.logger.Printf("container=%s inspect id failed: %v", c.cfg.Name, err)
+			return
+		}
+		c.dockerID = id
+	}
+	if c.dockerID == "" {
+		return
+	}
+	if err := c.status.Update(ctx, c.dockerID, status); err != nil {
+		c.logger.Printf("container=%s status update failed: %v", c.cfg.Name, err)
+	}
 }
