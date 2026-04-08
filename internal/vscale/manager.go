@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"hubfly-scale/internal/docker"
+	"hubfly-scale/internal/externalresources"
 	"hubfly-scale/internal/model"
 	"hubfly-scale/internal/store"
 )
@@ -16,16 +17,18 @@ type Manager struct {
 	store  *store.SQLiteStore
 	docker docker.Client
 	logger *log.Logger
+	res    externalresources.Reporter
 
 	mu          sync.Mutex
 	controllers map[string]context.CancelFunc
 }
 
-func NewManager(st *store.SQLiteStore, dc docker.Client, logger *log.Logger) *Manager {
+func NewManager(st *store.SQLiteStore, dc docker.Client, logger *log.Logger, res externalresources.Reporter) *Manager {
 	return &Manager{
 		store:       st,
 		docker:      dc,
 		logger:      logger,
+		res:         res,
 		controllers: make(map[string]context.CancelFunc),
 	}
 }
@@ -53,6 +56,12 @@ func (m *Manager) StartOrRestart(ctx context.Context, cfg model.VerticalScaleCon
 	if cfg.MaxCPU < cfg.MinCPU {
 		return fmt.Errorf("max_cpu must be >= min_cpu")
 	}
+	if cfg.MinMemMB <= 0 || cfg.MaxMemMB <= 0 {
+		return fmt.Errorf("min_mem_mb and max_mem_mb are required")
+	}
+	if cfg.MaxMemMB < cfg.MinMemMB {
+		return fmt.Errorf("max_mem_mb must be >= min_mem_mb")
+	}
 
 	if err := m.store.UpsertVertical(ctx, cfg); err != nil {
 		return err
@@ -67,7 +76,10 @@ func (m *Manager) StartOrRestart(ctx context.Context, cfg model.VerticalScaleCon
 	m.controllers[cfg.Name] = cancel
 	m.mu.Unlock()
 
-	ctrl := newController(cfg, m.store, m.docker, m.logger)
+	drop := func(ctx context.Context, name string) error {
+		return m.Unregister(ctx, name)
+	}
+	ctrl := newController(cfg, m.store, m.docker, m.logger, m.res, drop)
 	go ctrl.run(runCtx)
 	return nil
 }
