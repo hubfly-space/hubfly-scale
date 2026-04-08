@@ -101,7 +101,7 @@ Fields:
 - `inspect_interval_seconds`: interval to refresh IP/paused state (default `5`)
 - Vertical CPU scaling is configured separately (see below).
 
-### Vertical CPU Scaling (Fixed Policy)
+### Vertical Scaling (Fixed Policy)
 
 Register a container for vertical CPU scaling (separate from sleep registration):
 
@@ -111,7 +111,9 @@ curl -s -X POST http://localhost:10006/v1/vertical/containers \
   -d '{
     "name": "my-app",
     "min_cpu": 0.5,
-    "max_cpu": 2.0
+    "max_cpu": 2.0,
+    "min_mem_mb": 256,
+    "max_mem_mb": 2048
   }'
 ```
 
@@ -133,6 +135,15 @@ Policy:
 - scale down by `-0.2` cores when usage is ≤40% for 10 of the last 12 samples (≈60s)
 - enforce a 5-minute cooldown after any CPU change
 - never go below `min_cpu` or above `max_cpu`
+- memory: working set ≥85% for 60s → `+128 MB`, OOM → `x2`
+- memory: p95 working set ≤50% for 30m → `-128 MB`
+- memory cooldowns: 5m after up, 30m after down; never below `min_mem_mb` or above `max_mem_mb`
+
+Notes:
+- Memory units are MB (1024×1024 bytes).
+- External API base URL is `HF_EXTERNAL_BASE_URL` (default `https://hubfly.space`).
+- Resource changes are sent to `/api/containers/resources` using `API_KEY_EXTERNAL`.
+- Status updates are sent to `/api/containers/status` using `API_KEY_EXTERNAL`.
 
 ### List all managed containers
 

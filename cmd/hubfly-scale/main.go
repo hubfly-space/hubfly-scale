@@ -8,12 +8,15 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
 	"hubfly-scale/internal/api"
 	"hubfly-scale/internal/bandwidth"
 	"hubfly-scale/internal/docker"
+	"hubfly-scale/internal/externalresources"
+	"hubfly-scale/internal/externalstatus"
 	"hubfly-scale/internal/scaler"
 	"hubfly-scale/internal/store"
 	"hubfly-scale/internal/traffic"
@@ -43,13 +46,18 @@ func main() {
 	}
 	defer st.Close()
 
+	baseURL := getenv("HF_EXTERNAL_BASE_URL", "https://hubfly.space")
+	statusKey := os.Getenv("API_KEY_EXTERNAL")
+	statusClient := externalstatus.NewClient(joinURL(baseURL, "/api/containers/status"), statusKey)
+	resourcesClient := externalresources.NewClient(joinURL(baseURL, "/api/containers/resources"), statusKey)
+
 	dockerClient := docker.NewCLIClient()
 	watcher := traffic.NewWatcher(logger)
-	manager := scaler.NewManager(st, dockerClient, watcher, logger)
+	manager := scaler.NewManager(st, dockerClient, watcher, logger, statusClient)
 	if err := manager.LoadAndStart(context.Background()); err != nil {
 		logger.Fatalf("load containers: %v", err)
 	}
-	vscaleManager := vscale.NewManager(st, dockerClient, logger)
+	vscaleManager := vscale.NewManager(st, dockerClient, logger, resourcesClient)
 	if err := vscaleManager.LoadAndStart(context.Background()); err != nil {
 		logger.Fatalf("load vertical containers: %v", err)
 	}
@@ -88,4 +96,19 @@ func getenv(key, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+func joinURL(base, path string) string {
+	base = strings.TrimSpace(base)
+	path = strings.TrimSpace(path)
+	if base == "" {
+		return path
+	}
+	if strings.HasSuffix(base, "/") {
+		base = strings.TrimRight(base, "/")
+	}
+	if !strings.HasPrefix(path, "/") {
+		path = "/" + path
+	}
+	return base + path
 }

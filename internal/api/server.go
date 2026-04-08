@@ -208,6 +208,14 @@ func (s *Server) handleVerticalContainers(w http.ResponseWriter, r *http.Request
 			respondJSON(w, http.StatusBadRequest, map[string]string{"error": "max_cpu must be >= min_cpu"})
 			return
 		}
+		if req.MinMemMB <= 0 || req.MaxMemMB <= 0 {
+			respondJSON(w, http.StatusBadRequest, map[string]string{"error": "min_mem_mb and max_mem_mb are required"})
+			return
+		}
+		if req.MaxMemMB < req.MinMemMB {
+			respondJSON(w, http.StatusBadRequest, map[string]string{"error": "max_mem_mb must be >= min_mem_mb"})
+			return
+		}
 
 		cfg := req.ToInternal()
 		if err := s.vscale.StartOrRestart(r.Context(), cfg); err != nil {
