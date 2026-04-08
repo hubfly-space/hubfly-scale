@@ -17,6 +17,7 @@ import (
 )
 
 type Client interface {
+	InspectID(ctx context.Context, containerName string) (string, error)
 	InspectIP(ctx context.Context, containerName string) (string, error)
 	InspectPaused(ctx context.Context, containerName string) (bool, error)
 	InspectPID(ctx context.Context, containerName string) (int, error)
@@ -26,6 +27,7 @@ type Client interface {
 	Unpause(ctx context.Context, containerName string) error
 	Stats(ctx context.Context, containerName string) (ContainerStats, error)
 	UpdateCPU(ctx context.Context, containerName string, nanoCPUs int64) error
+	UpdateMemory(ctx context.Context, containerName string, bytes int64) error
 }
 
 type CLIClient struct {
@@ -42,6 +44,14 @@ func NewCLIClient() *CLIClient {
 		apiVersion: apiVersion,
 		httpClient: newDockerHTTPClient(socketPath),
 	}
+}
+
+func (c *CLIClient) InspectID(ctx context.Context, containerName string) (string, error) {
+	out, err := runDocker(ctx, "inspect", "-f", "{{.Id}}", containerName)
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(out), nil
 }
 
 func (c *CLIClient) InspectIP(ctx context.Context, containerName string) (string, error) {
@@ -124,6 +134,11 @@ type ContainerStats struct {
 	TotalUsage  uint64
 	SystemUsage uint64
 	OnlineCPUs  uint64
+	MemoryUsage uint64
+	MemoryLimit uint64
+	MemoryCache uint64
+	Failcnt     uint64
+	OOMKills    uint64
 }
 
 type statsResponse struct {
@@ -135,6 +150,12 @@ type statsResponse struct {
 		SystemUsage uint64 `json:"system_cpu_usage"`
 		OnlineCPUs  uint64 `json:"online_cpus"`
 	} `json:"cpu_stats"`
+	MemoryStats struct {
+		Usage   uint64            `json:"usage"`
+		Limit   uint64            `json:"limit"`
+		Failcnt uint64            `json:"failcnt"`
+		Stats   map[string]uint64 `json:"stats"`
+	} `json:"memory_stats"`
 }
 
 func (c *CLIClient) Stats(ctx context.Context, containerName string) (ContainerStats, error) {
@@ -153,23 +174,76 @@ func (c *CLIClient) Stats(ctx context.Context, containerName string) (ContainerS
 		return ContainerStats{}, fmt.Errorf("docker stats: %s", strings.TrimSpace(string(body)))
 	}
 
+	bodyBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return ContainerStats{}, fmt.Errorf("read stats: %w", err)
+	}
+	if len(bodyBytes) == 0 {
+		return ContainerStats{}, fmt.Errorf("decode stats: empty body")
+	}
 	var decoded statsResponse
-	if err := json.NewDecoder(resp.Body).Decode(&decoded); err != nil {
+	if err := json.Unmarshal(bodyBytes, &decoded); err != nil {
 		return ContainerStats{}, fmt.Errorf("decode stats: %w", err)
 	}
 	online := decoded.CPUStats.OnlineCPUs
 	if online == 0 {
 		online = uint64(len(decoded.CPUStats.CPUUsage.PerCPUUsage))
 	}
+	cache := uint64(0)
+	if decoded.MemoryStats.Stats != nil {
+		cache = decoded.MemoryStats.Stats["cache"]
+		if cache == 0 {
+			cache = decoded.MemoryStats.Stats["inactive_file"]
+		}
+	}
+	oomKills := uint64(0)
+	if decoded.MemoryStats.Stats != nil {
+		oomKills = decoded.MemoryStats.Stats["oom_kill"]
+		if oomKills == 0 {
+			oomKills = decoded.MemoryStats.Stats["oom_killed"]
+		}
+	}
 	return ContainerStats{
 		TotalUsage:  decoded.CPUStats.CPUUsage.TotalUsage,
 		SystemUsage: decoded.CPUStats.SystemUsage,
 		OnlineCPUs:  online,
+		MemoryUsage: decoded.MemoryStats.Usage,
+		MemoryLimit: decoded.MemoryStats.Limit,
+		MemoryCache: cache,
+		Failcnt:     decoded.MemoryStats.Failcnt,
+		OOMKills:    oomKills,
 	}, nil
 }
 
 func (c *CLIClient) UpdateCPU(ctx context.Context, containerName string, nanoCPUs int64) error {
 	payload := map[string]any{"NanoCpus": nanoCPUs}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+	path := fmt.Sprintf("http://docker/%s/containers/%s/update", c.apiVersion, url.PathEscape(containerName))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, path, bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= http.StatusBadRequest {
+		respBody, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("docker update: %s", strings.TrimSpace(string(respBody)))
+	}
+	return nil
+}
+
+func (c *CLIClient) UpdateMemory(ctx context.Context, containerName string, memBytes int64) error {
+	if memBytes < 1 {
+		memBytes = 1
+	}
+	payload := map[string]any{"Memory": memBytes}
 	body, err := json.Marshal(payload)
 	if err != nil {
 		return err

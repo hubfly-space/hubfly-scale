@@ -67,30 +67,38 @@ type ContainerInfo struct {
 }
 
 type VerticalScaleConfig struct {
-	Name   string  `json:"name"`
-	MinCPU float64 `json:"min_cpu"`
-	MaxCPU float64 `json:"max_cpu"`
+	Name     string  `json:"name"`
+	MinCPU   float64 `json:"min_cpu"`
+	MaxCPU   float64 `json:"max_cpu"`
+	MinMemMB int64   `json:"min_mem_mb"`
+	MaxMemMB int64   `json:"max_mem_mb"`
 }
 
 type VerticalScaleConfigAPI struct {
-	Name   string  `json:"name"`
-	MinCPU float64 `json:"min_cpu"`
-	MaxCPU float64 `json:"max_cpu"`
+	Name     string  `json:"name"`
+	MinCPU   float64 `json:"min_cpu"`
+	MaxCPU   float64 `json:"max_cpu"`
+	MinMemMB int64   `json:"min_mem_mb"`
+	MaxMemMB int64   `json:"max_mem_mb"`
 }
 
 func (c VerticalScaleConfigAPI) ToInternal() VerticalScaleConfig {
 	return VerticalScaleConfig{
-		Name:   c.Name,
-		MinCPU: c.MinCPU,
-		MaxCPU: c.MaxCPU,
+		Name:     c.Name,
+		MinCPU:   c.MinCPU,
+		MaxCPU:   c.MaxCPU,
+		MinMemMB: c.MinMemMB,
+		MaxMemMB: c.MaxMemMB,
 	}
 }
 
 func (c VerticalScaleConfig) ToAPI() VerticalScaleConfigAPI {
 	return VerticalScaleConfigAPI{
-		Name:   c.Name,
-		MinCPU: c.MinCPU,
-		MaxCPU: c.MaxCPU,
+		Name:     c.Name,
+		MinCPU:   c.MinCPU,
+		MaxCPU:   c.MaxCPU,
+		MinMemMB: c.MinMemMB,
+		MaxMemMB: c.MaxMemMB,
 	}
 }
 
@@ -98,6 +106,8 @@ type VerticalScaleRuntime struct {
 	Name             string     `json:"name"`
 	CurrentCPU       float64    `json:"current_cpu"`
 	CPUCooldownUntil *time.Time `json:"cpu_cooldown_until,omitempty"`
+	CurrentMemMB     int64      `json:"current_mem_mb"`
+	MemCooldownUntil *time.Time `json:"mem_cooldown_until,omitempty"`
 	UpdatedAt        time.Time  `json:"updated_at"`
 }
 
