@@ -3,6 +3,8 @@ package scaler
 import (
 	"context"
 	"log"
+	"net"
+	"strings"
 	"sync"
 	"time"
 
@@ -99,8 +101,21 @@ func (c *controller) run(ctx context.Context) {
 			return false
 		}
 		c.inspectFailures = 0
-
-		if ip != "" && ip != c.runtime.CurrentIP {
+		ip = strings.TrimSpace(ip)
+		if ip == "" || net.ParseIP(ip) == nil {
+			if ip != "" && net.ParseIP(ip) == nil {
+				c.logger.Printf("container=%s inspect ip invalid: %q", c.cfg.Name, ip)
+			}
+			if c.runtime.CurrentIP != "" {
+				if watchCancel != nil {
+					watchCancel()
+					watchCancel = nil
+				}
+				packetCh = nil
+				errCh = nil
+				c.runtime.CurrentIP = ""
+			}
+		} else if ip != c.runtime.CurrentIP {
 			if watchCancel != nil {
 				watchCancel()
 			}
