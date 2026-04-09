@@ -276,6 +276,7 @@ func memoryUsagePercent(workingSetMB int64, currentMemMB int64) float64 {
 
 func (c *controller) updateResources(ctx context.Context, cpu *float64, memMB *int64) error {
 	if c.res == nil {
+		c.logger.Printf("vscale container=%s external resources request skipped reason=not_configured", c.cfg.Name)
 		return fmt.Errorf("external resource reporter not configured")
 	}
 	if c.dockerID == "" {
@@ -288,5 +289,32 @@ func (c *controller) updateResources(ctx context.Context, cpu *float64, memMB *i
 	if c.dockerID == "" {
 		return fmt.Errorf("empty docker container id")
 	}
-	return c.res.Update(ctx, c.dockerID, cpu, memMB)
+	c.logResourceRequest(cpu, memMB)
+	if err := c.res.Update(ctx, c.dockerID, cpu, memMB); err != nil {
+		return err
+	}
+	c.logResourceUpdate(cpu, memMB)
+	return nil
+}
+
+func (c *controller) logResourceRequest(cpu *float64, memMB *int64) {
+	cpuStr, memStr := formatResourcePayload(cpu, memMB)
+	c.logger.Printf("vscale container=%s external resources request cpu=%s mem_mb=%s", c.cfg.Name, cpuStr, memStr)
+}
+
+func (c *controller) logResourceUpdate(cpu *float64, memMB *int64) {
+	cpuStr, memStr := formatResourcePayload(cpu, memMB)
+	c.logger.Printf("vscale container=%s external resources updated cpu=%s mem_mb=%s", c.cfg.Name, cpuStr, memStr)
+}
+
+func formatResourcePayload(cpu *float64, memMB *int64) (string, string) {
+	cpuStr := "-"
+	memStr := "-"
+	if cpu != nil {
+		cpuStr = fmt.Sprintf("%.2f", *cpu)
+	}
+	if memMB != nil {
+		memStr = fmt.Sprintf("%d", *memMB)
+	}
+	return cpuStr, memStr
 }

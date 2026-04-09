@@ -211,6 +211,7 @@ func (c *controller) snapshot() model.ContainerRuntime {
 
 func (c *controller) notifyStatus(ctx context.Context, status string) {
 	if c.status == nil {
+		c.logger.Printf("container=%s status update skipped external=%s reason=not_configured", c.cfg.Name, status)
 		return
 	}
 	if c.dockerID == "" {
@@ -224,7 +225,10 @@ func (c *controller) notifyStatus(ctx context.Context, status string) {
 	if c.dockerID == "" {
 		return
 	}
+	c.logger.Printf("container=%s status update request external=%s", c.cfg.Name, status)
 	if err := c.status.Update(ctx, c.dockerID, status); err != nil {
 		c.logger.Printf("container=%s status update failed: %v", c.cfg.Name, err)
+		return
 	}
+	c.logger.Printf("container=%s status updated external=%s", c.cfg.Name, status)
 }
