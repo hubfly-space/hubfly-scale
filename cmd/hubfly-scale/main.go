@@ -64,6 +64,9 @@ func main() {
 
 	limiter := bandwidth.NewLimiter(dockerClient, logger)
 	netLimiter := bandwidth.NewNetworkLimiter(dockerClient, logger)
+	if err := applyStoredBandwidth(context.Background(), st, limiter, netLimiter, logger); err != nil {
+		logger.Printf("apply stored bandwidth: %v", err)
+	}
 	server := api.NewServer(st, manager, limiter, netLimiter, vscaleManager, logger)
 	httpServer := &http.Server{
 		Addr:              addr,
@@ -111,4 +114,42 @@ func joinURL(base, path string) string {
 		path = "/" + path
 	}
 	return base + path
+}
+
+func applyStoredBandwidth(ctx context.Context, st *store.SQLiteStore, limiter *bandwidth.Limiter, netLimiter *bandwidth.NetworkLimiter, logger *log.Logger) error {
+	if st == nil || limiter == nil || netLimiter == nil {
+		return nil
+	}
+	limits, err := st.ListBandwidthLimits(ctx)
+	if err != nil {
+		return err
+	}
+	for _, limit := range limits {
+		req := bandwidth.UpdateRequest{
+			EgressMbps:  limit.EgressMbps,
+			IngressMbps: limit.IngressMbps,
+		}
+		if err := limiter.Apply(ctx, limit.Name, req); err != nil {
+			logger.Printf("container=%s bandwidth reapply failed: %v", limit.Name, err)
+		} else {
+			logger.Printf("container=%s bandwidth re-applied egress=%.2f ingress=%.2f", limit.Name, limit.EgressMbps, limit.IngressMbps)
+		}
+	}
+
+	netLimits, err := st.ListNetworkBandwidthLimits(ctx)
+	if err != nil {
+		return err
+	}
+	for _, limit := range netLimits {
+		req := bandwidth.UpdateRequest{
+			EgressMbps:  limit.EgressMbps,
+			IngressMbps: limit.IngressMbps,
+		}
+		if err := netLimiter.Apply(ctx, limit.Name, req); err != nil {
+			logger.Printf("network=%s bandwidth reapply failed: %v", limit.Name, err)
+		} else {
+			logger.Printf("network=%s bandwidth re-applied egress=%.2f ingress=%.2f", limit.Name, limit.EgressMbps, limit.IngressMbps)
+		}
+	}
+	return nil
 }

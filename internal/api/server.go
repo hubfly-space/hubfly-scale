@@ -169,6 +169,10 @@ func (s *Server) handleContainerByName(w http.ResponseWriter, r *http.Request) {
 				respondError(w, http.StatusInternalServerError, err)
 				return
 			}
+			if err := s.store.UpsertBandwidthLimit(r.Context(), name, req.EgressMbps, req.IngressMbps); err != nil {
+				respondError(w, http.StatusInternalServerError, err)
+				return
+			}
 			respondJSON(w, http.StatusOK, map[string]string{"status": "bandwidth updated"})
 			return
 		}
@@ -300,6 +304,10 @@ func (s *Server) handleNetworkByName(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if err := s.netLimiter.Apply(r.Context(), name, req); err != nil {
+			respondError(w, http.StatusInternalServerError, err)
+			return
+		}
+		if err := s.store.UpsertNetworkBandwidthLimit(r.Context(), name, req.EgressMbps, req.IngressMbps); err != nil {
 			respondError(w, http.StatusInternalServerError, err)
 			return
 		}

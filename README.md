@@ -185,6 +185,7 @@ Notes:
 - Egress and ingress are optional; at least one must be > 0.
 - Ingress shaping uses a per-container IFB device (`ifb<ifindex>`).
 - This endpoint does not require prior container registration.
+- Limits are stored in SQLite and re-applied on service restart (best-effort).
 
 ### Update network bandwidth limits (shared across containers)
 
@@ -201,6 +202,7 @@ Notes:
 - Applies a shared cap on the network bridge for all containers in that network.
 - Uses HTB + fq_codel (or sfq fallback) for fairness.
 - This cap applies to total bridge egress (shared up/down pool).
+- Limits are stored in SQLite and re-applied on service restart (best-effort).
 
 ## Quick End-to-End Test with Curl
 

@@ -100,6 +100,20 @@ CREATE TABLE IF NOT EXISTS vertical_runtime (
   FOREIGN KEY(name) REFERENCES vertical_containers(name) ON DELETE CASCADE
 );
 
+CREATE TABLE IF NOT EXISTS bandwidth_limits (
+  name TEXT PRIMARY KEY,
+  egress_mbps REAL NOT NULL DEFAULT 0,
+  ingress_mbps REAL NOT NULL DEFAULT 0,
+  updated_at DATETIME NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS network_bandwidth_limits (
+  name TEXT PRIMARY KEY,
+  egress_mbps REAL NOT NULL DEFAULT 0,
+  ingress_mbps REAL NOT NULL DEFAULT 0,
+  updated_at DATETIME NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_runtime_status ON container_runtime(status);
 CREATE INDEX IF NOT EXISTS idx_runtime_last_traffic ON container_runtime(last_traffic_at);
 `)
@@ -633,6 +647,88 @@ func (s *SQLiteStore) DeleteContainer(ctx context.Context, name string) error {
 		return ErrNotFound
 	}
 	return nil
+}
+
+func (s *SQLiteStore) UpsertBandwidthLimit(ctx context.Context, name string, egress, ingress float64) error {
+	now := time.Now().UTC()
+	_, err := s.db.ExecContext(ctx, `
+INSERT INTO bandwidth_limits (name, egress_mbps, ingress_mbps, updated_at)
+VALUES (?, ?, ?, ?)
+ON CONFLICT(name) DO UPDATE SET
+  egress_mbps=excluded.egress_mbps,
+  ingress_mbps=excluded.ingress_mbps,
+  updated_at=excluded.updated_at
+`, name, egress, ingress, now)
+	if err != nil {
+		return fmt.Errorf("upsert bandwidth limit: %w", err)
+	}
+	return nil
+}
+
+func (s *SQLiteStore) ListBandwidthLimits(ctx context.Context) ([]model.BandwidthLimit, error) {
+	rows, err := s.db.QueryContext(ctx, `
+SELECT name, egress_mbps, ingress_mbps, updated_at
+FROM bandwidth_limits
+ORDER BY name
+`)
+	if err != nil {
+		return nil, fmt.Errorf("list bandwidth limits: %w", err)
+	}
+	defer rows.Close()
+
+	var limits []model.BandwidthLimit
+	for rows.Next() {
+		var limit model.BandwidthLimit
+		if err := rows.Scan(&limit.Name, &limit.EgressMbps, &limit.IngressMbps, &limit.UpdatedAt); err != nil {
+			return nil, fmt.Errorf("scan bandwidth limits: %w", err)
+		}
+		limits = append(limits, limit)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate bandwidth limits: %w", err)
+	}
+	return limits, nil
+}
+
+func (s *SQLiteStore) UpsertNetworkBandwidthLimit(ctx context.Context, name string, egress, ingress float64) error {
+	now := time.Now().UTC()
+	_, err := s.db.ExecContext(ctx, `
+INSERT INTO network_bandwidth_limits (name, egress_mbps, ingress_mbps, updated_at)
+VALUES (?, ?, ?, ?)
+ON CONFLICT(name) DO UPDATE SET
+  egress_mbps=excluded.egress_mbps,
+  ingress_mbps=excluded.ingress_mbps,
+  updated_at=excluded.updated_at
+`, name, egress, ingress, now)
+	if err != nil {
+		return fmt.Errorf("upsert network bandwidth limit: %w", err)
+	}
+	return nil
+}
+
+func (s *SQLiteStore) ListNetworkBandwidthLimits(ctx context.Context) ([]model.NetworkBandwidthLimit, error) {
+	rows, err := s.db.QueryContext(ctx, `
+SELECT name, egress_mbps, ingress_mbps, updated_at
+FROM network_bandwidth_limits
+ORDER BY name
+`)
+	if err != nil {
+		return nil, fmt.Errorf("list network bandwidth limits: %w", err)
+	}
+	defer rows.Close()
+
+	var limits []model.NetworkBandwidthLimit
+	for rows.Next() {
+		var limit model.NetworkBandwidthLimit
+		if err := rows.Scan(&limit.Name, &limit.EgressMbps, &limit.IngressMbps, &limit.UpdatedAt); err != nil {
+			return nil, fmt.Errorf("scan network bandwidth limits: %w", err)
+		}
+		limits = append(limits, limit)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate network bandwidth limits: %w", err)
+	}
+	return limits, nil
 }
 
 func boolToInt(v bool) int {

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -66,6 +67,37 @@ func (c *Client) Update(ctx context.Context, dockerContainerID string, status st
 	defer resp.Body.Close()
 	if resp.StatusCode >= http.StatusBadRequest {
 		return fmt.Errorf("status update failed: http %d", resp.StatusCode)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	if err := checkSuccess(body); err != nil {
+		return err
+	}
+	return nil
+}
+
+type apiResponse struct {
+	Success *bool  `json:"success"`
+	Message string `json:"message"`
+	Error   string `json:"error"`
+}
+
+func checkSuccess(body []byte) error {
+	if len(body) == 0 {
+		return nil
+	}
+	var resp apiResponse
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return nil
+	}
+	if resp.Success != nil && !*resp.Success {
+		msg := strings.TrimSpace(resp.Message)
+		if msg == "" {
+			msg = strings.TrimSpace(resp.Error)
+		}
+		if msg == "" {
+			msg = "success=false"
+		}
+		return fmt.Errorf("status update failed: %s", msg)
 	}
 	return nil
 }

@@ -115,3 +115,17 @@ type VerticalScaleInfo struct {
 	Config  VerticalScaleConfig  `json:"config"`
 	Runtime VerticalScaleRuntime `json:"runtime"`
 }
+
+type BandwidthLimit struct {
+	Name        string    `json:"name"`
+	EgressMbps  float64   `json:"egress_mbps"`
+	IngressMbps float64   `json:"ingress_mbps"`
+	UpdatedAt   time.Time `json:"updated_at"`
+}
+
+type NetworkBandwidthLimit struct {
+	Name        string    `json:"name"`
+	EgressMbps  float64   `json:"egress_mbps"`
+	IngressMbps float64   `json:"ingress_mbps"`
+	UpdatedAt   time.Time `json:"updated_at"`
+}
