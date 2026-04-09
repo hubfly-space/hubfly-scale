@@ -73,8 +73,8 @@ func (c *Client) Update(ctx context.Context, dockerContainerID string, cpu *floa
 	if resp.StatusCode >= http.StatusBadRequest {
 		return fmt.Errorf("resource update failed: http %d", resp.StatusCode)
 	}
-	body, _ := io.ReadAll(resp.Body)
-	if err := checkSuccess(body); err != nil {
+	respBody, _ := io.ReadAll(resp.Body)
+	if err := checkSuccess(respBody); err != nil {
 		return err
 	}
 	return nil
