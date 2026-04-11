@@ -48,7 +48,7 @@ func main() {
 
 	baseURL := getenv("HF_EXTERNAL_BASE_URL", "https://hubfly.space")
 	statusKey := os.Getenv("API_KEY_EXTERNAL")
-	statusClient := externalstatus.NewClient(joinURL(baseURL, "/api/containers/status"), statusKey)
+	statusClient := externalstatus.NewClient(joinURL(baseURL, "/api/containers/status"), statusKey, logger)
 	resourcesClient := externalresources.NewClient(joinURL(baseURL, "/api/containers/resources"), statusKey)
 
 	dockerClient := docker.NewCLIClient()

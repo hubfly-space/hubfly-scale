@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -16,28 +17,34 @@ type Reporter interface {
 	Update(ctx context.Context, dockerContainerID string, status string) error
 }
 
+var ErrNotConfigured = errors.New("external status reporter not configured")
+
+const maxLoggedBodyBytes = 2048
+
 type Client struct {
 	endpoint   string
 	apiKey     string
 	httpClient *http.Client
+	logger     *log.Logger
 }
 
-func NewClient(endpoint, apiKey string) *Client {
+func NewClient(endpoint, apiKey string, logger *log.Logger) *Client {
 	return &Client{
 		endpoint: strings.TrimSpace(endpoint),
 		apiKey:   strings.TrimSpace(apiKey),
 		httpClient: &http.Client{
 			Timeout: 5 * time.Second,
 		},
+		logger: logger,
 	}
 }
 
 func (c *Client) Update(ctx context.Context, dockerContainerID string, status string) error {
 	if c == nil {
-		return nil
+		return ErrNotConfigured
 	}
 	if c.apiKey == "" || c.endpoint == "" {
-		return nil
+		return ErrNotConfigured
 	}
 	if dockerContainerID == "" {
 		return errors.New("docker container id is required")
@@ -60,15 +67,21 @@ func (c *Client) Update(ctx context.Context, dockerContainerID string, status st
 	req.Header.Set("Authorization", "Bearer "+c.apiKey)
 	req.Header.Set("Content-Type", "application/json")
 
+	if c.logger != nil {
+		c.logger.Printf("external status request endpoint=%s container=%s status=%s", c.endpoint, dockerContainerID, status)
+	}
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("send status update: %w", err)
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode >= http.StatusBadRequest {
-		return fmt.Errorf("status update failed: http %d", resp.StatusCode)
-	}
 	respBody, _ := io.ReadAll(resp.Body)
+	if c.logger != nil {
+		c.logger.Printf("external status response status=%d body=%q", resp.StatusCode, trimBody(respBody))
+	}
+	if resp.StatusCode >= http.StatusBadRequest {
+		return fmt.Errorf("status update failed: http %d body=%s", resp.StatusCode, trimBody(respBody))
+	}
 	if err := checkSuccess(respBody); err != nil {
 		return err
 	}
@@ -100,4 +113,14 @@ func checkSuccess(body []byte) error {
 		return fmt.Errorf("status update failed: %s", msg)
 	}
 	return nil
+}
+
+func trimBody(body []byte) string {
+	if len(body) == 0 {
+		return ""
+	}
+	if len(body) <= maxLoggedBodyBytes {
+		return string(body)
+	}
+	return string(body[:maxLoggedBodyBytes]) + "...(truncated)"
 }

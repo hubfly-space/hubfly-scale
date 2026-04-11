@@ -2,6 +2,7 @@ package scaler
 
 import (
 	"context"
+	"errors"
 	"log"
 	"net"
 	"strings"
@@ -240,8 +241,11 @@ func (c *controller) notifyStatus(ctx context.Context, status string) {
 	if c.dockerID == "" {
 		return
 	}
-	c.logger.Printf("container=%s status update request external=%s", c.cfg.Name, status)
 	if err := c.status.Update(ctx, c.dockerID, status); err != nil {
+		if errors.Is(err, externalstatus.ErrNotConfigured) {
+			c.logger.Printf("container=%s status update skipped external=%s reason=not_configured", c.cfg.Name, status)
+			return
+		}
 		c.logger.Printf("container=%s status update failed: %v", c.cfg.Name, err)
 		return
 	}
