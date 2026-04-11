@@ -33,6 +33,8 @@ func main() {
 
 	logger := log.New(os.Stdout, "hubfly-scale ", log.LstdFlags|log.Lmicroseconds)
 
+	loadDotEnv(envPaths(), logger)
+
 	dbPath := getenv("HF_SCALE_DB", "./data/hubfly-scale.db")
 	addr := getenv("HF_SCALE_ADDR", ":10006")
 
@@ -99,6 +101,76 @@ func getenv(key, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+func envPaths() []string {
+	if raw := strings.TrimSpace(os.Getenv("HF_SCALE_ENV_PATHS")); raw != "" {
+		parts := strings.Split(raw, ",")
+		paths := make([]string, 0, len(parts))
+		for _, p := range parts {
+			p = strings.TrimSpace(p)
+			if p != "" {
+				paths = append(paths, p)
+			}
+		}
+		if len(paths) > 0 {
+			return paths
+		}
+	}
+	if p := strings.TrimSpace(os.Getenv("HF_SCALE_ENV_PATH")); p != "" {
+		return []string{p}
+	}
+	return []string{
+		".env",
+		"/hubfly-tool-manager/tools/hubfly-scale/.env",
+	}
+}
+
+func loadDotEnv(paths []string, logger *log.Logger) {
+	for _, path := range paths {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			continue
+		}
+		if logger != nil {
+			logger.Printf("loaded env file path=%s", path)
+		}
+		parseDotEnv(string(data))
+		return
+	}
+}
+
+func parseDotEnv(content string) {
+	lines := strings.Split(content, "\n")
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		key, val, ok := strings.Cut(line, "=")
+		if !ok {
+			continue
+		}
+		key = strings.TrimSpace(key)
+		val = strings.TrimSpace(val)
+		if key == "" {
+			continue
+		}
+		val = trimQuotes(val)
+		if os.Getenv(key) == "" {
+			_ = os.Setenv(key, val)
+		}
+	}
+}
+
+func trimQuotes(val string) string {
+	if len(val) < 2 {
+		return val
+	}
+	if (val[0] == '"' && val[len(val)-1] == '"') || (val[0] == '\'' && val[len(val)-1] == '\'') {
+		return val[1 : len(val)-1]
+	}
+	return val
 }
 
 func joinURL(base, path string) string {
