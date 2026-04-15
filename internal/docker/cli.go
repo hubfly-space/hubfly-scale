@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -55,11 +56,30 @@ func (c *CLIClient) InspectID(ctx context.Context, containerName string) (string
 }
 
 func (c *CLIClient) InspectIP(ctx context.Context, containerName string) (string, error) {
-	out, err := runDocker(ctx, "inspect", "-f", "{{range.NetworkSettings.Networks}}{{.IPAddress}}{{end}}", containerName)
+	out, err := runDocker(ctx, "inspect", "-f", "{{json .NetworkSettings.Networks}}", containerName)
 	if err != nil {
 		return "", err
 	}
-	return strings.TrimSpace(out), nil
+	type networkInfo struct {
+		IPAddress string `json:"IPAddress"`
+	}
+	var networks map[string]networkInfo
+	if err := json.Unmarshal([]byte(strings.TrimSpace(out)), &networks); err != nil {
+		return "", fmt.Errorf("decode inspect networks: %w", err)
+	}
+
+	ips := make([]string, 0, len(networks))
+	for _, network := range networks {
+		ip := strings.TrimSpace(network.IPAddress)
+		if parsed := net.ParseIP(ip); parsed != nil {
+			ips = append(ips, parsed.String())
+		}
+	}
+	if len(ips) == 0 {
+		return "", nil
+	}
+	sort.Strings(ips)
+	return ips[0], nil
 }
 
 func (c *CLIClient) InspectPaused(ctx context.Context, containerName string) (bool, error) {

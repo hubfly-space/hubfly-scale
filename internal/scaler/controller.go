@@ -135,7 +135,14 @@ func (c *controller) run(ctx context.Context) {
 			c.logger.Printf("container=%s watcher bound ip=%s", c.cfg.Name, ip)
 		}
 
+		wasPaused := c.runtime.Paused
 		c.runtime.Paused = paused
+		if wasPaused && !paused {
+			// If something outside the watcher path woke the container up, do not
+			// immediately re-pause it based on stale idle timestamps.
+			c.runtime.LastTrafficAt = &now
+			c.logger.Printf("container=%s detected external resume", c.cfg.Name)
+		}
 		newStatus := decideStatus(now, c.runtime.LastTrafficAt, paused, c.cfg.BusyWindow)
 		c.setStatus(now, newStatus)
 
