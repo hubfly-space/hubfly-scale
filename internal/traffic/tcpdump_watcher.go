@@ -63,6 +63,7 @@ func (w *Watcher) Start(ctx context.Context, ip string) (<-chan struct{}, <-chan
 	set[session] = struct{}{}
 	w.updateFilterLocked()
 	w.mu.Unlock()
+	w.logger.Printf("watcher session added ip=%s", ip)
 
 	go func() {
 		<-ctx.Done()
@@ -83,6 +84,7 @@ func (w *Watcher) unregister(session *watchSession) {
 	}
 	w.updateFilterLocked()
 	w.mu.Unlock()
+	w.logger.Printf("watcher session removed ip=%s", session.ip)
 
 	close(session.packetCh)
 	close(session.errCh)
@@ -141,6 +143,7 @@ func (w *Watcher) captureLoop() {
 func (w *Watcher) runCapture(ctx context.Context, filter string) {
 	args := []string{"-l", "-n", "-q", "-i", "any"}
 	args = append(args, strings.Fields(filter)...)
+	w.logger.Printf("tcpdump starting filter=%q", filter)
 	cmd := exec.CommandContext(ctx, "tcpdump", args...)
 
 	stdout, err := cmd.StdoutPipe()
@@ -188,6 +191,9 @@ func (w *Watcher) runCapture(ctx context.Context, filter string) {
 func (w *Watcher) notifyIP(ip string) {
 	w.mu.RLock()
 	set := w.sessions[ip]
+	if len(set) > 0 {
+		w.logger.Printf("watcher packet matched ip=%s sessions=%d", ip, len(set))
+	}
 	for session := range set {
 		select {
 		case session.packetCh <- struct{}{}:

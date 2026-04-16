@@ -66,6 +66,13 @@ type ContainerInfo struct {
 	Runtime ContainerRuntime `json:"runtime"`
 }
 
+type TrackedContainer struct {
+	Name      string `json:"name"`
+	CurrentIP string `json:"current_ip"`
+	Status    string `json:"status"`
+	Paused    bool   `json:"paused"`
+}
+
 type VerticalScaleConfig struct {
 	Name     string  `json:"name"`
 	MinCPU   float64 `json:"min_cpu"`

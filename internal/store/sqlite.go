@@ -21,6 +21,9 @@ type SQLiteStore struct {
 	runtimeDone      chan struct{}
 	runtimeStartOnce sync.Once
 	runtimeStopOnce  sync.Once
+
+	droppedMu       sync.RWMutex
+	droppedRuntimes map[string]struct{}
 }
 
 func NewSQLiteStore(dsn string) (*SQLiteStore, error) {
@@ -40,7 +43,10 @@ PRAGMA busy_timeout = 5000;
 		return nil, fmt.Errorf("set sqlite pragmas: %w", err)
 	}
 
-	s := &SQLiteStore{db: db}
+	s := &SQLiteStore{
+		db:              db,
+		droppedRuntimes: make(map[string]struct{}),
+	}
 	if err := s.migrate(context.Background()); err != nil {
 		_ = db.Close()
 		return nil, err
@@ -181,6 +187,8 @@ func (s *SQLiteStore) ensureColumn(ctx context.Context, table, column, def strin
 }
 
 func (s *SQLiteStore) UpsertContainer(ctx context.Context, cfg model.ContainerConfig) error {
+	s.allowRuntime(cfg.Name)
+
 	now := time.Now().UTC()
 	_, err := s.db.ExecContext(ctx, `
 INSERT INTO containers (name, sleep_after_seconds, busy_window_seconds, inspect_interval_seconds, min_cpu, max_cpu, created_at, updated_at)
@@ -362,6 +370,9 @@ WHERE c.name = ?
 }
 
 func (s *SQLiteStore) UpdateRuntime(ctx context.Context, rt model.ContainerRuntime) error {
+	if rt.Name == "" || s.runtimeDropped(rt.Name) {
+		return nil
+	}
 	now := time.Now().UTC()
 	_, err := s.db.ExecContext(ctx, `
 UPDATE container_runtime
@@ -376,12 +387,22 @@ WHERE name=?
 
 func (s *SQLiteStore) QueueRuntimeUpdate(rt model.ContainerRuntime) error {
 	s.startRuntimeBatcher()
+	if rt.Name == "" || s.runtimeDropped(rt.Name) {
+		return nil
+	}
 	select {
 	case s.runtimeQueue <- rt:
 		return nil
 	default:
 		return s.UpdateRuntime(context.Background(), rt)
 	}
+}
+
+func (s *SQLiteStore) DropRuntime(name string) {
+	if name == "" {
+		return
+	}
+	s.dropRuntime(name)
 }
 
 func (s *SQLiteStore) startRuntimeBatcher() {
@@ -452,15 +473,15 @@ WHERE name=?
 		pending = make(map[string]model.ContainerRuntime)
 	}
 
-	for {
-		select {
-		case rt := <-s.runtimeQueue:
-			if rt.Name == "" {
-				continue
-			}
-			pending[rt.Name] = rt
-			if len(pending) >= maxBatchSize {
-				flush()
+		for {
+			select {
+			case rt := <-s.runtimeQueue:
+				if rt.Name == "" || s.runtimeDropped(rt.Name) {
+					continue
+				}
+				pending[rt.Name] = rt
+				if len(pending) >= maxBatchSize {
+					flush()
 			}
 		case <-ticker.C:
 			flush()
@@ -470,6 +491,28 @@ WHERE name=?
 			return
 		}
 	}
+}
+
+func (s *SQLiteStore) runtimeDropped(name string) bool {
+	s.droppedMu.RLock()
+	defer s.droppedMu.RUnlock()
+	_, ok := s.droppedRuntimes[name]
+	return ok
+}
+
+func (s *SQLiteStore) dropRuntime(name string) {
+	s.droppedMu.Lock()
+	defer s.droppedMu.Unlock()
+	s.droppedRuntimes[name] = struct{}{}
+}
+
+func (s *SQLiteStore) allowRuntime(name string) {
+	if name == "" {
+		return
+	}
+	s.droppedMu.Lock()
+	defer s.droppedMu.Unlock()
+	delete(s.droppedRuntimes, name)
 }
 
 func (s *SQLiteStore) UpsertVertical(ctx context.Context, cfg model.VerticalScaleConfig) error {

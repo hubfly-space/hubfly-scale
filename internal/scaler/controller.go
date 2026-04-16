@@ -179,8 +179,10 @@ func (c *controller) run(ctx context.Context) {
 			_ = c.store.QueueRuntimeUpdate(c.snapshot())
 		case <-packetCh:
 			now := time.Now().UTC()
+			c.logger.Printf("container=%s wakeup packet received ip=%s paused=%t", c.cfg.Name, c.runtime.CurrentIP, c.runtime.Paused)
 			c.runtime.LastTrafficAt = &now
 			if c.runtime.Paused {
+				c.logger.Printf("container=%s unpause on traffic started", c.cfg.Name)
 				if err := c.docker.Unpause(ctx, c.cfg.Name); err != nil {
 					c.setStatus(now, model.StatusError)
 					c.logger.Printf("container=%s unpause failed: %v", c.cfg.Name, err)

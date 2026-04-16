@@ -32,6 +32,7 @@ func (s *Server) Routes() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", s.healthz)
 	mux.HandleFunc("/v1/containers", s.handleContainers)
+	mux.HandleFunc("/v1/containers/tracked", s.handleTrackedContainers)
 	mux.HandleFunc("/v1/containers/", s.handleContainerByName)
 	mux.HandleFunc("/v1/vertical/containers", s.handleVerticalContainers)
 	mux.HandleFunc("/v1/vertical/containers/", s.handleVerticalContainerByName)
@@ -94,6 +95,19 @@ func (s *Server) handleContainers(w http.ResponseWriter, r *http.Request) {
 	default:
 		w.WriteHeader(http.StatusMethodNotAllowed)
 	}
+}
+
+func (s *Server) handleTrackedContainers(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	containers, err := s.manager.ListTracked(r.Context())
+	if err != nil {
+		respondError(w, http.StatusInternalServerError, err)
+		return
+	}
+	respondJSON(w, http.StatusOK, containers)
 }
 
 func (s *Server) handleContainerByName(w http.ResponseWriter, r *http.Request) {

@@ -53,6 +53,7 @@ func (m *Manager) StartOrRestart(ctx context.Context, cfg model.ContainerConfig)
 	if cfg.Name == "" {
 		return fmt.Errorf("container name is required")
 	}
+	m.logger.Printf("container=%s register requested", cfg.Name)
 	if cfg.BusyWindow <= 0 {
 		cfg.BusyWindow = 2 * time.Second
 	}
@@ -70,11 +71,14 @@ func (m *Manager) StartOrRestart(ctx context.Context, cfg model.ContainerConfig)
 	}
 
 	if err := m.store.UpsertContainer(ctx, cfg); err != nil {
+		m.logger.Printf("container=%s register upsert failed: %v", cfg.Name, err)
 		return err
 	}
+	m.logger.Printf("container=%s register upserted", cfg.Name)
 
 	m.mu.Lock()
 	if cancel, ok := m.controllers[cfg.Name]; ok {
+		m.logger.Printf("container=%s register replacing existing controller", cfg.Name)
 		cancel()
 		delete(m.controllers, cfg.Name)
 	}
@@ -84,6 +88,7 @@ func (m *Manager) StartOrRestart(ctx context.Context, cfg model.ContainerConfig)
 
 	ctrl := newController(cfg, m.store, m.docker, m.watcher, m.logger, m.status, m.Unregister)
 	go ctrl.run(runCtx)
+	m.logger.Printf("container=%s register controller started", cfg.Name)
 	return nil
 }
 
@@ -96,9 +101,47 @@ func (m *Manager) StopAll() {
 	m.controllers = map[string]context.CancelFunc{}
 }
 
+func (m *Manager) ListTracked(ctx context.Context) ([]model.TrackedContainer, error) {
+	containers, err := m.store.ListContainers(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	m.mu.Lock()
+	tracked := make(map[string]struct{}, len(m.controllers))
+	for name := range m.controllers {
+		tracked[name] = struct{}{}
+	}
+	m.mu.Unlock()
+
+	out := make([]model.TrackedContainer, 0, len(tracked))
+	for _, c := range containers {
+		if _, ok := tracked[c.Config.Name]; !ok {
+			continue
+		}
+		out = append(out, model.TrackedContainer{
+			Name:      c.Config.Name,
+			CurrentIP: c.Runtime.CurrentIP,
+			Status:    c.Runtime.Status,
+			Paused:    c.Runtime.Paused,
+		})
+	}
+	return out, nil
+}
+
 func (m *Manager) Unregister(ctx context.Context, name string) error {
 	if name == "" {
 		return fmt.Errorf("container name is required")
+	}
+
+	m.logger.Printf("container=%s unregister requested", name)
+
+	if m.docker != nil {
+		if err := m.docker.Unpause(ctx, name); err != nil {
+			m.logger.Printf("container=%s unregister unpause failed: %v", name, err)
+		} else {
+			m.logger.Printf("container=%s unregister unpause succeeded", name)
+		}
 	}
 
 	m.mu.Lock()
@@ -108,5 +151,13 @@ func (m *Manager) Unregister(ctx context.Context, name string) error {
 	}
 	m.mu.Unlock()
 
-	return m.store.DeleteContainer(ctx, name)
+	m.store.DropRuntime(name)
+
+	if err := m.store.DeleteContainer(ctx, name); err != nil {
+		m.logger.Printf("container=%s unregister delete failed: %v", name, err)
+		return err
+	}
+
+	m.logger.Printf("container=%s unregister completed", name)
+	return nil
 }
