@@ -116,7 +116,7 @@ func (c *controller) run(ctx context.Context) {
 				errCh = nil
 				c.runtime.CurrentIP = ""
 			}
-		} else if ip != c.runtime.CurrentIP {
+		} else if ip != c.runtime.CurrentIP || watchCancel == nil || packetCh == nil || errCh == nil {
 			if watchCancel != nil {
 				watchCancel()
 			}
