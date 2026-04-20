@@ -10,10 +10,10 @@ const (
 	cpuPollInterval       = 5 * time.Second
 	cpuScaleUpThreshold   = 80.0
 	cpuScaleDownThreshold = 40.0
-	cpuWindowSize         = 12
-	cpuRequiredHits       = 10
+	cpuWindowSize         = 5
+	cpuRequiredHits       = 5
 	cpuStepCores          = 0.2
-	cpuCooldown           = 5 * time.Minute
+	cpuCooldown           = 3 * time.Minute
 )
 
 type cpuWindow struct {
