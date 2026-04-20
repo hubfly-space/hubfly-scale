@@ -9,8 +9,8 @@ import (
 const (
 	memUpThreshold        = 85.0
 	memDownThreshold      = 50.0
-	memUpWindowSize       = 5
-	memUpRequiredHits     = 5
+	memUpWindowSize       = 4
+	memUpRequiredHits     = 4
 	memDownWindowSize     = 360 // 30m at 5s polls
 	memUpStepMB           = 128
 	memDownStepMB         = 128

@@ -10,8 +10,10 @@ const (
 	cpuPollInterval       = 5 * time.Second
 	cpuScaleUpThreshold   = 80.0
 	cpuScaleDownThreshold = 40.0
-	cpuWindowSize         = 5
-	cpuRequiredHits       = 5
+	cpuScaleUpWindowSize  = 3
+	cpuScaleUpHits        = 3
+	cpuScaleDownWindowSize = 12
+	cpuScaleDownHits      = 10
 	cpuStepFraction       = 0.25
 	cpuCooldown           = 3 * time.Minute
 )

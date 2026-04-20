@@ -22,7 +22,8 @@ type controller struct {
 	drop   func(context.Context, string) error
 
 	runtime       model.VerticalScaleRuntime
-	cpuWindow     *cpuWindow
+	cpuUpWindow   *cpuWindow
+	cpuDownWindow *cpuWindow
 	memWindow     *memWindow
 	memLongWindow *memWindow
 	prevStats     docker.ContainerStats
@@ -48,7 +49,8 @@ func newController(cfg model.VerticalScaleConfig, st *store.SQLiteStore, dc dock
 			CurrentMemMB: cfg.MinMemMB,
 			UpdatedAt:    now,
 		},
-		cpuWindow:     newCPUWindow(cpuWindowSize),
+		cpuUpWindow:   newCPUWindow(cpuScaleUpWindowSize),
+		cpuDownWindow: newCPUWindow(cpuScaleDownWindowSize),
 		memWindow:     newMemWindow(memUpWindowSize),
 		memLongWindow: newMemWindow(memDownWindowSize),
 	}
@@ -130,15 +132,19 @@ func (c *controller) handleScale(ctx context.Context) bool {
 	}
 
 	if c.runtime.CPUCooldownUntil != nil && now.Before(*c.runtime.CPUCooldownUntil) {
-		c.cpuWindow.Reset()
+		c.cpuUpWindow.Reset()
+		c.cpuDownWindow.Reset()
 	} else if cpuOK {
-		c.cpuWindow.Add(cpuUsagePct)
-		if c.cpuWindow.Full() {
-			if c.cpuWindow.CountAbove(cpuScaleUpThreshold) >= cpuRequiredHits {
+		c.cpuUpWindow.Add(cpuUsagePct)
+		c.cpuDownWindow.Add(cpuUsagePct)
+		if c.cpuUpWindow.Full() {
+			if c.cpuUpWindow.CountAbove(cpuScaleUpThreshold) >= cpuScaleUpHits {
 				c.scaleCPU(ctx, now, cpuStepFraction)
 				return false
 			}
-			if c.cpuWindow.CountBelow(cpuScaleDownThreshold) >= cpuRequiredHits {
+		}
+		if c.cpuDownWindow.Full() {
+			if c.cpuDownWindow.CountBelow(cpuScaleDownThreshold) >= cpuScaleDownHits {
 				c.scaleCPU(ctx, now, -cpuStepFraction)
 				return false
 			}
@@ -171,7 +177,8 @@ func (c *controller) scaleCPU(ctx context.Context, now time.Time, delta float64)
 		return
 	}
 	if floatEquals(target, c.runtime.CurrentCPU) {
-		c.cpuWindow.Reset()
+		c.cpuUpWindow.Reset()
+		c.cpuDownWindow.Reset()
 		return
 	}
 
@@ -183,7 +190,8 @@ func (c *controller) scaleCPU(ctx context.Context, now time.Time, delta float64)
 	c.runtime.CurrentCPU = target
 	cooldownUntil := now.Add(cpuCooldown)
 	c.runtime.CPUCooldownUntil = &cooldownUntil
-	c.cpuWindow.Reset()
+	c.cpuUpWindow.Reset()
+	c.cpuDownWindow.Reset()
 	c.logger.Printf("vscale container=%s cpu scaled to %.2f cores", c.cfg.Name, target)
 }
 
