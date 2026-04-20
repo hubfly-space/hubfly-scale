@@ -12,7 +12,7 @@ const (
 	cpuScaleDownThreshold = 40.0
 	cpuWindowSize         = 5
 	cpuRequiredHits       = 5
-	cpuStepCores          = 0.2
+	cpuStepFraction       = 0.25
 	cpuCooldown           = 3 * time.Minute
 )
 

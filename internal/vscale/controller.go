@@ -135,11 +135,11 @@ func (c *controller) handleScale(ctx context.Context) bool {
 		c.cpuWindow.Add(cpuUsagePct)
 		if c.cpuWindow.Full() {
 			if c.cpuWindow.CountAbove(cpuScaleUpThreshold) >= cpuRequiredHits {
-				c.scaleCPU(ctx, now, cpuStepCores)
+				c.scaleCPU(ctx, now, cpuStepFraction)
 				return false
 			}
 			if c.cpuWindow.CountBelow(cpuScaleDownThreshold) >= cpuRequiredHits {
-				c.scaleCPU(ctx, now, -cpuStepCores)
+				c.scaleCPU(ctx, now, -cpuStepFraction)
 				return false
 			}
 		}
@@ -150,12 +150,25 @@ func (c *controller) handleScale(ctx context.Context) bool {
 }
 
 func (c *controller) scaleCPU(ctx context.Context, now time.Time, delta float64) {
-	target := c.runtime.CurrentCPU + delta
-	if delta > 0 && target > c.cfg.MaxCPU {
-		target = c.cfg.MaxCPU
+	step := c.cfg.MaxCPU * math.Abs(delta)
+	if step <= 0 {
+		return
 	}
-	if delta < 0 && target < c.cfg.MinCPU {
-		target = c.cfg.MinCPU
+
+	target := c.runtime.CurrentCPU
+	switch {
+	case delta > 0:
+		target = math.Ceil((c.runtime.CurrentCPU+0.000001)/step) * step
+		if target > c.cfg.MaxCPU {
+			target = c.cfg.MaxCPU
+		}
+	case delta < 0:
+		target = math.Floor((c.runtime.CurrentCPU-0.000001)/step) * step
+		if target < c.cfg.MinCPU {
+			target = c.cfg.MinCPU
+		}
+	default:
+		return
 	}
 	if floatEquals(target, c.runtime.CurrentCPU) {
 		c.cpuWindow.Reset()
